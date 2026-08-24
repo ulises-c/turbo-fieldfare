@@ -707,6 +707,14 @@ struct ServerArgumentTests {
         }
     }
 
+    @Test func acceptsGemma4MaximumContext() throws {
+        let arguments = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--max-context", "262144",
+        ])
+        #expect(arguments.maxContext == 262_144)
+    }
+
     @Test func runtimeFlagsReachTheResolvedConfiguration() throws {
         let arguments = try ServerArguments.parse([
             "--model", "model.gturbo",

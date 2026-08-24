@@ -20,7 +20,7 @@ swift build -c release --product TurboFieldfareServer
 .build/release/TurboFieldfareServer \
   --model scratch/gemma4.gturbo \
   --port 8080 \
-  --max-context 16384
+  --max-context 262144
 ```
 
 The server loads the model before opening the port. Wait for
@@ -112,7 +112,7 @@ OpenCode:
             "output": ["text"]
           },
           "limit": {
-            "context": 16384,
+            "context": 262144,
             "output": 4096
           }
         }
@@ -150,7 +150,7 @@ Pi uses its `openai-completions` adapter:
         "name": "Gemma 4 26B-A4B IT",
         "reasoning": false,
         "input": ["text", "image"],
-        "contextWindow": 16384,
+        "contextWindow": 262144,
         "maxTokens": 4096
       }]
     }
@@ -226,7 +226,7 @@ The server supports one model and one choice. It does not support the Responses
 API, legacy Completions, embeddings, structured output,
 batching, log probabilities, or remote model switching.
 
-Context length can be 4K, 8K, 16K, 32K, or 64K. The default is 16K. Larger FP16
+Context length can be 4K, 8K, 16K, 32K, 64K, 128K, or 256K. The default is 16K. Larger FP16
 KV contexts use more memory. On an 8 GB Mac, run one model process at a time and
 watch memory pressure.
 
