@@ -24,7 +24,7 @@ public struct ServerArguments: Equatable, Sendable {
       --vision-residency <on-demand|keep-ready>
                                  Routed-expert residency during vision (default on-demand).
       --port <1...65535>         Loopback port (default 8080).
-      --model-id <id>            API model identifier (default gemma-4-26b-a4b-it).
+      --model-id <id>            API model identifier (default gemma-4-26b-a4b-it-ulises).
       --max-context <tokens>     4096, 8192, 16384, 32768, 65536, 131072, or
                                  262144 (default 16384).
       --queue-limit <count>      Maximum queued requests (default 4).
@@ -76,7 +76,7 @@ public struct ServerArguments: Equatable, Sendable {
     public static func parse(_ input: [String]) throws -> ServerArguments {
         var model: String?
         var port = 8080
-        var modelID = "gemma-4-26b-a4b-it"
+        var modelID = "gemma-4-26b-a4b-it-ulises"
         var maxContext = 16_384
         var queueLimit = 4
         var promptCacheMode: ServerPromptCacheMode = .singlePrefix
