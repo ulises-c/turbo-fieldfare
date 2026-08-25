@@ -43,7 +43,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = Path("/Users/ulises/github/turbo-fieldfare/scratch/gemma4.gturbo")
 PORT = 8080
-MODEL_ID = "gemma-4-26b-a4b-it-ulises"
+MODEL_ID = "gemma-4-26b-a4b-it"
 UNIFORM_RESERVE_TOKENS = 8_192
 CHAT_TEMPLATE_OVERHEAD_TOKENS = 13
 LEVELS = [(96, 98_304), (128, 131_072), (192, 196_608), (256, 262_144)]

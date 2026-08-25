@@ -679,7 +679,7 @@ struct ServerArgumentTests {
         let arguments = try ServerArguments.parse(["--model", "model.gturbo"])
         #expect(arguments.port == 8080)
         #expect(arguments.maxContext == 16_384)
-        #expect(arguments.modelID == "gemma-4-26b-a4b-it-ulises")
+        #expect(arguments.modelID == "gemma-4-26b-a4b-it")
         #expect(arguments.queueLimit == 4)
         #expect(arguments.promptCacheMode == .singlePrefix)
         #expect(arguments.expertCacheSlots == 16)
