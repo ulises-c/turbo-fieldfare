@@ -130,7 +130,7 @@ def run_level(label: int, max_context: int) -> dict:
             data=payload,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=1800) as response:
+        with urllib.request.urlopen(req, timeout=3600) as response:
             body = json.loads(response.read())
         result["client_status"] = "completed"
         result["client_elapsed_seconds"] = round(time.time() - request_start, 3)

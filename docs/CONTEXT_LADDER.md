@@ -27,7 +27,7 @@ completion token. It is uniform across all four levels.
 | 96K | 90,112 | 464.218s | 463.937s | 194.233 | 0.001s* | 4,082 MB | 2,177 MB | 76% | 0 MB | completed |
 | 128K | 122,880 | 701.019s | 700.724s | 175.361 | 0.001s* | 4,714 MB | 2,817 MB | 75% | 0 MB | completed |
 | 192K | 188,416 | 1,291.620s | 1,290.896s | 145.958 | 0.001s* | 6,032 MB | 4,097 MB | 68% | 0 MB | completed |
-| 256K | 253,952 | bounded at 1,800s | not completed | — | — | 7,323 MB | 5,377 MB | 62% | 0 MB | client timeout; no OOM |
+| 256K | 253,952 | 30-minute bound removed; rerun with a 60-minute client timeout | not yet completed | — | — | 7,323 MB | 5,377 MB | 62% | 0 MB | prior 30-minute client timeout was too short for the measured PP curve |
 
 `*` The TG values in this pass are not meaningful throughput measurements: the
 probe deliberately requested only one output token to isolate long-context
