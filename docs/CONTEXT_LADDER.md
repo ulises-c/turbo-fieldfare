@@ -21,6 +21,54 @@ not be used as a quality or general-purpose performance claim.
 The 8,192-token reserve leaves space for the chat-template overhead and one
 completion token. It is uniform across all five levels.
 
+## Why 256K
+
+The [Gemma 4 model card](https://ai.google.dev/gemma/docs/core/model_card_4)
+lists a 256K-token context window for the 26B A4B model. The server therefore
+tests the model's native maximum rather than extrapolating beyond the model's
+published context length. With the uniform 8,192-token reserve, the 256K rung
+uses a `--max-context` value of 262,144 and targets 253,952 prompt tokens.
+
+## Testing methodology
+
+`Scripts/context_ladder.py` orchestrates each rung as an isolated run:
+
+1. It starts a fresh release `TurboFieldfareServer` subprocess on loopback
+   (`127.0.0.1:8080`) with the selected `--max-context` value and waits for the
+   ready message.
+2. It starts a sampler that records `memory_pressure`, `vm.swapusage`,
+   `footprint`, and `ps` data every 10 seconds.
+3. It constructs the request body and posts one OpenAI-compatible chat request
+   to `/v1/chat/completions`.
+4. It records the server-reported usage, completion log, prefill/decode timing,
+   and resource samples, then sends SIGINT to the server process it launched.
+
+The context text is deliberately controlled rather than semantic: the harness
+creates `"word " * words`, where
+`words = max_context - 8,192 - 13`. The 13-token allowance is the measured
+Gemma chat-template overhead. The server's `usage.prompt_tokens` is authoritative
+for the final count; it reports 57,344, 90,112, 122,880, 188,416, and 253,952
+tokens for the five runs. This makes the ladder reproducible, but repeated words
+can produce more stable routing than real agent prompts.
+
+A rung passes when the client receives HTTP 200, the server reports the intended
+prompt and one-token completion, the completion log contains the timing fields,
+and the request is not rejected, timed out, cancelled, truncated by the client,
+or terminated by OOM. Resource pressure is reported separately rather than used
+as a hidden pass/fail threshold. The one-token output isolates prompt prefill and
+memory behavior; it is not a useful decode-throughput benchmark.
+
+## Timing trend
+
+End-to-end time is broadly linear with prompt length over these five points but
+not linear at a constant per-token cost. Relative to 64K, prompt length grows
+4.43x at 256K while E2E time grows 8.13x. A least-squares fit of E2E seconds to
+actual prompt tokens has `R² = 0.996`, but time per prompt token rises from
+4.118 ms at 64K to 7.563 ms at 256K. The incremental cost also rises from
+6.960 seconds per additional 1K tokens between 64K and 96K to 9.597 seconds
+per 1K between 192K and 256K. Prefill throughput therefore declines as context
+grows, rather than remaining constant.
+
 ## Results
 
 | Context | Prompt | E2E server time | PP time | PP tok/s | TG time | Peak footprint | Peak Metal | Min free unified memory | Swap | Result |
