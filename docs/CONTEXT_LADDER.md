@@ -27,16 +27,16 @@ completion token. It is uniform across all four levels.
 | 96K | 90,112 | 464.218s | 463.937s | 194.233 | 0.001s* | 4,082 MB | 2,177 MB | 76% | 0 MB | completed |
 | 128K | 122,880 | 701.019s | 700.724s | 175.361 | 0.001s* | 4,714 MB | 2,817 MB | 75% | 0 MB | completed |
 | 192K | 188,416 | 1,291.620s | 1,290.896s | 145.958 | 0.001s* | 6,032 MB | 4,097 MB | 68% | 0 MB | completed |
-| 256K | 253,952 | 30-minute bound removed; rerun with a 60-minute client timeout | not yet completed | — | — | 7,323 MB | 5,377 MB | 62% | 0 MB | prior 30-minute client timeout was too short for the measured PP curve |
+| 256K | 253,952 | 1,920.565s | 1,919.868s | 132.276 | 0.001s* | 7,320 MB | 5,377 MB | 62% | 0 MB | completed |
 
 `*` The TG values in this pass are not meaningful throughput measurements: the
 probe deliberately requested only one output token to isolate long-context
 prefill and memory behavior. Run a separate fixed-output decode pass, such as
 128 requested tokens, before making TG performance claims.
 
-The 256K request was accepted and entered generation. It remained stable in
-unified memory but did not complete within the 30-minute client bound. No swap,
-OOM, or context-length rejection occurred.
+The 256K request completed after the client timeout was raised to 60 minutes.
+It used 1,920.565 seconds end-to-end (1,919.868 seconds of prefill) and had no
+observed swap use, OOM, context-length rejection, or client cancellation.
 
 Raw JSON samples are written by `Scripts/context_ladder.py` to the local,
 ignored `benchmark-results/context-ladder/` directory.
