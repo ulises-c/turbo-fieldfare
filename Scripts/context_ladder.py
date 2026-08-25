@@ -1,5 +1,31 @@
 #!/usr/bin/env python3
-"""Measure long-context server timing and unified-memory behavior."""
+"""Measure controlled long-context server timing and memory behavior.
+
+Each ladder level starts a fresh release ``TurboFieldfareServer`` on the
+loopback interface, waits for its ready message, and submits one
+OpenAI-compatible chat completion with ``max_completion_tokens=1``. The prompt
+is deliberately reproducible rather than semantic: ``"word "`` is repeated
+until the selected context cap is reached while reserving
+``UNIFORM_RESERVE_TOKENS`` and the measured chat-template overhead. Server
+reported prompt usage is authoritative; the packing estimate is not treated as
+the token count.
+
+While the request runs, the harness samples macOS memory pressure, swap usage,
+process footprint, RSS/VSZ, and Metal allocation every ten seconds. It also
+captures the server's completion log, including prompt/decode durations and
+throughput. A level is considered complete only when the HTTP request succeeds,
+the server reports the expected prompt and one-token completion, and the
+request is not rejected, timed out, cancelled, or terminated by OOM. Resource
+pressure is recorded as measurement data rather than a hidden pass/fail rule.
+
+The default ``LEVELS`` ladder covers 96K through the model's 256K native cap.
+The 64K baseline is intentionally callable through ``run_level(64, 65_536)``
+so it can be run independently without repeating the expensive higher rungs.
+Each result is persisted under the ignored ``benchmark-results/context-ladder``
+directory. These synthetic one-token runs measure admission, prefill, and
+memory behavior; they are not semantic quality or useful decode-throughput
+benchmarks.
+"""
 from __future__ import annotations
 
 import json
