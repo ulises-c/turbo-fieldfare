@@ -7,10 +7,10 @@ not be used as a quality or general-purpose performance claim.
 
 ## Protocol
 
-- Hardware: Apple M5 Max MacBook Pro (18 CPU cores), 36 GB unified memory
+- Hardware: Apple M5 Max MacBook Pro (18 CPU cores, 32-core integrated GPU), 36 GB unified memory
 - OS: macOS 26.5.2 (25F84)
 - Swift: Apple Swift 6.3.3
-- Runtime: release `TurboFieldfareServer`, source base `fork-main` at `c0354d7`
+- Runtime: release `TurboFieldfareServer` built from this PR's implementation
 - Model: `gemma-4-26b-a4b-it-ulises` runtime ID, Gemma 4 26B-A4B 4-bit weight pack
 - Sampling: temperature 0, one requested output token
 - Uniform reserve: 8,192 tokens at every context level
