@@ -226,7 +226,14 @@ The server supports one model and one choice. It does not support the Responses
 API, legacy Completions, embeddings, structured output,
 batching, log probabilities, or remote model switching.
 
-Context length can be 4K, 8K, 16K, 32K, 64K, 128K, or 256K. The default is 16K. Larger FP16
+For long-context diagnostics, the server completion log also reports the measured
+execution stages: `pp` is prompt prefill time, `pp_tok_s` is computed prompt
+throughput excluding cached tokens, `tg` is token-generation time, and
+`tg_tok_s` is generated-token throughput. These exclude time spent queued or
+preparing the request; the `completed in` value is the end-to-end server request
+duration.
+
+Context length can be 4K, 8K, 16K, 32K, 64K, 96K, 128K, 192K, or 256K. The default is 16K. Larger FP16
 KV contexts use more memory. On an 8 GB Mac, run one model process at a time and
 watch memory pressure.
 

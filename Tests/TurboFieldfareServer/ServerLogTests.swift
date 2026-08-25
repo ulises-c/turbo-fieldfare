@@ -6,6 +6,27 @@ import Testing
 /// left the request's last line as `generating` forever: reading the log, a
 /// running request, an abandoned one and a crashed one were indistinguishable.
 @Suite struct ServerLogTests {
+    @Test func completionMessageIncludesPromptAndGenerationTimings() {
+        let completion = ServerCompletion(
+            content: "ok",
+            toolCalls: [],
+            finishReason: "stop",
+            usage: OpenAIUsage(promptTokens: 120_013,
+                               completionTokens: 1,
+                               totalTokens: 120_014,
+                               cachedTokens: 0),
+            prefillSeconds: 675.595,
+            decodeSeconds: 0.250)
+        let line = ServerLog.completedMessage(
+            id: "chatcmpl-timing",
+            duration: .seconds(676),
+            completion: completion)
+
+        #expect(line.contains("pp=675.595s"))
+        #expect(line.contains("tg=0.250s"))
+        #expect(line.contains("tg_tok_s=4.000"))
+    }
+
     @Test func aCancelledRequestReadsAsCancelledRatherThanFailed() {
         let line = ServerLog.cancelledMessage(id: "chatcmpl-abc",
                                               phase: "generating",

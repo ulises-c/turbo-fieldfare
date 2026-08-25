@@ -25,8 +25,8 @@ public struct ServerArguments: Equatable, Sendable {
                                  Routed-expert residency during vision (default on-demand).
       --port <1...65535>         Loopback port (default 8080).
       --model-id <id>            API model identifier (default gemma-4-26b-a4b-it-ulises).
-      --max-context <tokens>     4096, 8192, 16384, 32768, 65536, 131072, or
-                                 262144 (default 16384).
+      --max-context <tokens>     4096, 8192, 16384, 32768, 65536, 98304,
+                                 131072, 196608, or 262144 (default 16384).
       --queue-limit <count>      Maximum queued requests (default 4).
       --prompt-cache-mode <off|single-prefix>
                                  Prompt KV reuse mode (default single-prefix).
@@ -111,7 +111,8 @@ public struct ServerArguments: Equatable, Sendable {
                 modelID = value
             case "--max-context":
                 guard let parsed = Int(value),
-                      [4_096, 8_192, 16_384, 32_768, 65_536, 131_072, 262_144]
+                      [4_096, 8_192, 16_384, 32_768, 65_536, 98_304, 131_072,
+                       196_608, 262_144]
                         .contains(parsed) else {
                     throw ServerArgumentError.invalid("--max-context is not supported")
                 }

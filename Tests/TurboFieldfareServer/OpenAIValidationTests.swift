@@ -708,12 +708,13 @@ struct ServerArgumentTests {
         }
     }
 
-    @Test func acceptsGemma4MaximumContext() throws {
+    @Test(arguments: [98_304, 131_072, 196_608, 262_144])
+    func acceptsGemma4LadderContexts(_ maxContext: Int) throws {
         let arguments = try ServerArguments.parse([
             "--model", "model.gturbo",
-            "--max-context", "262144",
+            "--max-context", String(maxContext),
         ])
-        #expect(arguments.maxContext == 262_144)
+        #expect(arguments.maxContext == maxContext)
     }
 
     @Test func runtimeFlagsReachTheResolvedConfiguration() throws {
