@@ -18,20 +18,35 @@ the server reports the expected prompt and one-token completion, and the
 request is not rejected, timed out, cancelled, or terminated by OOM. Resource
 pressure is recorded as measurement data rather than a hidden pass/fail rule.
 
-The default ``LEVELS`` ladder covers 96K through the model's 256K native cap.
-The 64K baseline is intentionally callable through ``run_level(64, 65_536)``
-so it can be run independently without repeating the expensive higher rungs.
-Each result is persisted under the ignored ``benchmark-results/context-ladder``
-directory. These synthetic one-token runs measure admission, prefill, and
-memory behavior; they are not semantic quality or useful decode-throughput
-benchmarks.
+WHAT THIS DOES NOT MEASURE
+--------------------------
+A one-token completion on repeated filler proves *admission*: that the server
+accepts the prompt, prefills it, and stays within memory. It cannot show that
+the model still attends across that span. Gemma 4 runs sliding-window attention
+on 25 of its 30 layers, so long-range signal rests on 5 full-attention layers
+and a degraded long context would still return HTTP 200 here. Use
+``Scripts/context_retrieval.py`` for that question; the two are complementary
+and neither substitutes for the other.
+
+Rungs are only comparable when produced by the same binary. Record the commit
+for every run and re-measure the whole ladder after any change to the prefill
+or attention path.
+
+Examples
+--------
+Full default ladder::
+
+    python3 Scripts/context_ladder.py --model scratch/gemma4.gturbo
+
+One rung, merged into the existing aggregate::
+
+    python3 Scripts/context_ladder.py --model scratch/gemma4.gturbo --levels 64
 """
 from __future__ import annotations
 
+import argparse
 import json
-import os
 import re
-import select
 import signal
 import subprocess
 import sys
@@ -41,18 +56,34 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL = Path("/Users/ulises/github/turbo-fieldfare/scratch/gemma4.gturbo")
-PORT = 8080
-MODEL_ID = "gemma-4-26b-a4b-it"
+DEFAULT_MODEL = ROOT / "scratch" / "gemma4.gturbo"
+DEFAULT_PORT = 8080
+DEFAULT_MODEL_ID = "gemma-4-26b-a4b-it"
 UNIFORM_RESERVE_TOKENS = 8_192
 CHAT_TEMPLATE_OVERHEAD_TOKENS = 13
-LEVELS = [(96, 98_304), (128, 131_072), (192, 196_608), (256, 262_144)]
-OUT = ROOT / "benchmark-results" / "context-ladder"
-OUT.mkdir(parents=True, exist_ok=True)
+# Label -> context cap. 64 is the baseline rung; it is part of the ladder so a
+# baseline can be produced by the same binary and protocol as the rungs it is
+# compared against.
+LEVEL_CONTEXTS = {
+    64: 65_536,
+    96: 98_304,
+    128: 131_072,
+    192: 196_608,
+    256: 262_144,
+}
+DEFAULT_LEVELS = [64, 96, 128, 192, 256]
+DEFAULT_OUT = ROOT / "benchmark-results" / "context-ladder"
 
 
 def command_text(args: list[str]) -> str:
     return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT)
+
+
+def git_commit() -> str | None:
+    try:
+        return command_text(["git", "-C", str(ROOT), "rev-parse", "HEAD"]).strip()
+    except Exception:
+        return None
 
 
 def memory_sample(pid: int, phase: str) -> dict:
@@ -96,7 +127,8 @@ def memory_sample(pid: int, phase: str) -> dict:
 
 
 def wait_ready(proc: subprocess.Popen[str], logs: list[str], ready: threading.Event) -> None:
-    assert proc.stdout is not None
+    if proc.stdout is None:
+        return
     for line in proc.stdout:
         line = line.rstrip()
         logs.append(line)
@@ -104,12 +136,12 @@ def wait_ready(proc: subprocess.Popen[str], logs: list[str], ready: threading.Ev
             ready.set()
 
 
-def run_level(label: int, max_context: int) -> dict:
-    words = max_context - UNIFORM_RESERVE_TOKENS - CHAT_TEMPLATE_OVERHEAD_TOKENS
+def run_level(label: int, max_context: int, options: argparse.Namespace) -> dict:
+    words = max_context - options.reserve - CHAT_TEMPLATE_OVERHEAD_TOKENS
     command = [
-        str(ROOT / ".build/release/TurboFieldfareServer"),
-        "--model", str(MODEL),
-        "--port", str(PORT),
+        str(options.server),
+        "--model", str(options.model),
+        "--port", str(options.port),
         "--max-context", str(max_context),
     ]
     started = time.time()
@@ -117,7 +149,7 @@ def run_level(label: int, max_context: int) -> dict:
     logs: list[str] = []
     ready = threading.Event()
     threading.Thread(target=wait_ready, args=(proc, logs, ready), daemon=True).start()
-    if not ready.wait(120):
+    if not ready.wait(options.ready_timeout):
         proc.terminate()
         raise RuntimeError(f"server did not become ready for {label}K: {logs[-10:]}")
 
@@ -127,13 +159,13 @@ def run_level(label: int, max_context: int) -> dict:
     def sample_loop() -> None:
         while not stop_sampling.is_set():
             samples.append(memory_sample(proc.pid, "request" if len(samples) else "ready"))
-            stop_sampling.wait(10)
+            stop_sampling.wait(options.sample_interval)
 
     sampler = threading.Thread(target=sample_loop, daemon=True)
     sampler.start()
     text = "word " * words
     payload = json.dumps({
-        "model": MODEL_ID,
+        "model": options.model_id,
         "messages": [{"role": "user", "content": text}],
         "temperature": 0,
         "max_completion_tokens": 1,
@@ -143,20 +175,22 @@ def run_level(label: int, max_context: int) -> dict:
         "label_k": label,
         "max_context": max_context,
         "target_words": words,
-        "uniform_reserve_tokens": UNIFORM_RESERVE_TOKENS,
+        "uniform_reserve_tokens": options.reserve,
         "expected_prompt_tokens": words + CHAT_TEMPLATE_OVERHEAD_TOKENS,
         "server_pid": proc.pid,
         "server_command": " ".join(command),
+        "source_commit": options.commit,
+        "client_timeout_seconds": options.request_timeout,
         "ready_seconds": round(request_start - started, 3),
         "samples": samples,
     }
     try:
         req = urllib.request.Request(
-            f"http://127.0.0.1:{PORT}/v1/chat/completions",
+            f"http://127.0.0.1:{options.port}/v1/chat/completions",
             data=payload,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=3600) as response:
+        with urllib.request.urlopen(req, timeout=options.request_timeout) as response:
             body = json.loads(response.read())
         result["client_status"] = "completed"
         result["client_elapsed_seconds"] = round(time.time() - request_start, 3)
@@ -212,20 +246,78 @@ def run_level(label: int, max_context: int) -> dict:
     return result
 
 
-def main() -> int:
-    if not MODEL.is_dir():
-        print(f"missing model directory: {MODEL}", file=sys.stderr)
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run the TurboFieldfare long-context ladder.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL,
+                        help="Completed .gturbo model directory.")
+    parser.add_argument("--server", type=Path,
+                        default=ROOT / ".build/release/TurboFieldfareServer",
+                        help="Release server binary.")
+    parser.add_argument("--model-id", default=DEFAULT_MODEL_ID,
+                        help="API model identifier sent in the request body.")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help="Loopback port for the harness-owned server.")
+    parser.add_argument("--levels", default=",".join(str(x) for x in DEFAULT_LEVELS),
+                        help="Comma-separated rung labels in K, e.g. '64' or '64,256'.")
+    parser.add_argument("--reserve", type=int, default=UNIFORM_RESERVE_TOKENS,
+                        help="Tokens reserved inside every cap. Keep uniform across rungs.")
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
+                        help="Directory for per-rung and aggregate artifacts.")
+    parser.add_argument("--request-timeout", type=float, default=3600,
+                        help="Client time bound for one request, in seconds.")
+    parser.add_argument("--ready-timeout", type=float, default=120,
+                        help="Seconds to wait for the server ready line.")
+    parser.add_argument("--sample-interval", type=float, default=10,
+                        help="Seconds between resource samples.")
+    options = parser.parse_args(argv)
+    try:
+        options.levels = [int(part) for part in options.levels.split(",") if part.strip()]
+    except ValueError:
+        parser.error("--levels must be a comma-separated list of integers")
+    unknown = [x for x in options.levels if x not in LEVEL_CONTEXTS]
+    if unknown:
+        parser.error(f"unknown level(s) {unknown}; choose from {sorted(LEVEL_CONTEXTS)}")
+    return options
+
+
+def main(argv: list[str] | None = None) -> int:
+    options = parse_args(argv)
+    if not options.model.is_dir():
+        print(f"missing model directory: {options.model}", file=sys.stderr)
         return 2
-    results = []
-    for label, max_context in LEVELS:
-        words = max_context - UNIFORM_RESERVE_TOKENS - CHAT_TEMPLATE_OVERHEAD_TOKENS
-        print(f"START {label}K context={max_context} words={words} reserve={UNIFORM_RESERVE_TOKENS}", flush=True)
-        result = run_level(label, max_context)
-        results.append(result)
+    if not options.server.is_file():
+        print(f"missing server binary: {options.server}\n"
+              "build it with: swift build -c release --product TurboFieldfareServer",
+              file=sys.stderr)
+        return 2
+    options.commit = git_commit()
+    options.out.mkdir(parents=True, exist_ok=True)
+
+    # Merge into any existing aggregate so a single rung can be re-measured
+    # without repeating the hours-long rungs beside it.
+    aggregate_path = options.out / "results.json"
+    aggregate: dict[int, dict] = {}
+    if aggregate_path.is_file():
+        try:
+            for entry in json.loads(aggregate_path.read_text()):
+                aggregate[entry["label_k"]] = entry
+        except Exception as exc:
+            print(f"ignoring unreadable aggregate {aggregate_path}: {exc}", file=sys.stderr)
+
+    for label in options.levels:
+        max_context = LEVEL_CONTEXTS[label]
+        words = max_context - options.reserve - CHAT_TEMPLATE_OVERHEAD_TOKENS
+        print(f"START {label}K context={max_context} words={words} reserve={options.reserve}", flush=True)
+        result = run_level(label, max_context, options)
+        aggregate[label] = result
         print(json.dumps({k: v for k, v in result.items() if k not in {"samples", "completion_log", "cancel_log"}}, sort_keys=True), flush=True)
-        (OUT / f"{label}K.json").write_text(json.dumps(result, indent=2) + "\n")
-    (OUT / "results.json").write_text(json.dumps(results, indent=2) + "\n")
-    print(f"WROTE {OUT / 'results.json'}", flush=True)
+        (options.out / f"{label}K.json").write_text(json.dumps(result, indent=2) + "\n")
+
+    ordered = [aggregate[k] for k in sorted(aggregate)]
+    aggregate_path.write_text(json.dumps(ordered, indent=2) + "\n")
+    print(f"WROTE {aggregate_path}", flush=True)
     return 0
 
 
