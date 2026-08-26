@@ -762,6 +762,51 @@ struct ServerArgumentTests {
         }
     }
 
+    /// Chunked prefill enables the FP16 sliding-window ring, which is the only
+    /// reason a long context fits: with the ring the 25 sliding-window layers
+    /// hold `slidingWindow + chunkTokens` tokens each instead of `maxContext`.
+    /// `--prefill off` drops the ring, so a ladder context would allocate tens
+    /// of gigabytes of KV and fail at load rather than at argument parsing.
+    @Test(arguments: [98_304, 131_072, 196_608, 262_144])
+    func unchunkedPrefillIsRejectedAboveTheRingBackedContexts(
+        _ maxContext: Int
+    ) throws {
+        let arguments = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--max-context", String(maxContext),
+            "--prefill", "off",
+        ])
+        #expect(throws: ServerArgumentError.self) {
+            try arguments.resolvedRuntimeConfiguration()
+        }
+    }
+
+    @Test(arguments: [4_096, 8_192, 16_384, 32_768, 65_536])
+    func unchunkedPrefillStaysAllowedAtPreLadderContexts(
+        _ maxContext: Int
+    ) throws {
+        let arguments = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--max-context", String(maxContext),
+            "--prefill", "off",
+        ])
+        let configuration = try arguments.resolvedRuntimeConfiguration()
+        #expect(configuration.prefillPolicy == .off)
+    }
+
+    @Test(arguments: [98_304, 131_072, 196_608, 262_144])
+    func chunkedPrefillRemainsAllowedAtLadderContexts(
+        _ maxContext: Int
+    ) throws {
+        let arguments = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--max-context", String(maxContext),
+            "--prefill", "on",
+        ])
+        let configuration = try arguments.resolvedRuntimeConfiguration()
+        #expect(configuration.prefillPolicy == .chunked)
+    }
+
     @Test(arguments: [
         ["--expert-cache-slots", "12"],
         ["--expert-cache-policy", "mru"],
