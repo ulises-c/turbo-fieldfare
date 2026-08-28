@@ -234,15 +234,31 @@ preparing the request; the `completed in` value is the end-to-end server request
 duration.
 
 Context length can be 4K, 8K, 16K, 32K, 64K, 96K, 128K, 192K, or 256K. The
-default is 16K. Larger FP16 KV contexts use more memory. On an 8 GB Mac, run one
-model process at a time and watch memory pressure.
+default is 16K. Both supported families — Gemma 4 26B-A4B and Qwen 3.6
+35B-A3B — are natively 262,144, so 256K is the model's own maximum rather than
+an extrapolation. Larger FP16 KV contexts use more memory. On an 8 GB Mac, run
+one model process at a time and watch memory pressure.
 
-Above 64K the server requires `--prefill on`, which is the default. Chunked
-prefill enables the FP16 sliding-window ring, and that ring is what makes a long
-context affordable: it holds `slidingWindow + prefill-chunk-tokens` per
-sliding-window layer instead of the full context. With `--prefill off` every
-layer allocates KV at the full context, which needs roughly 55 GiB at 256K, so
-the combination is rejected during argument parsing rather than at model load.
+KV is allocated at the **context cap, not the prompt length**: a server started
+with `--max-context 262144` reaches its full KV footprint even for a 14-token
+prompt. `--max-context` is therefore the memory dial. See
+[Memory expectations](MEMORY_EXPECTATIONS.md) for the measured per-device
+table and `Scripts/memory_matrix.py` to generate it.
+
+Above 64K Gemma 4 requires `--prefill on`, which is the default. Chunked
+prefill enables the FP16 sliding-window ring, and that ring is what makes a
+long context affordable for Gemma: it holds `slidingWindow +
+prefill-chunk-tokens` per sliding-window layer instead of the full context.
+With `--prefill off` every layer allocates KV at the full context, which needs
+roughly 55 GiB at 256K, so the combination is rejected during argument parsing
+rather than at model load.
+
+That bound is a KV budget evaluated against the installed model's
+architecture, not a fixed context limit. Qwen 3.6 has no sliding-window layers
+— its 30 gated-DeltaNet layers hold a fixed recurrent state instead of
+per-token K/V rows — so the ring is a no-op for it and `--prefill off` stays
+available at every context. The server reads the family from the manifest
+before it validates, and falls back to Gemma's stricter bound when it cannot.
 
 Long contexts are admitted, but they are not cheap and they are not free of
 caveats:
