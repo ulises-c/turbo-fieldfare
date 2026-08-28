@@ -9,7 +9,8 @@ import Metal
 /// and the KV-cache + GDN-state reset interplay.
 @Suite struct QwenRunnerTests {
 
-    private func makeRunner() throws -> (URL, MetalContext, RealForwardRunner) {
+    private func makeRunner(runtimeConfiguration: RuntimeConfiguration = .production) throws
+        -> (URL, MetalContext, RealForwardRunner) {
         let dir = try QwenToySynthetic.write()
         let ctx = try MetalContext()
         let model = try Model.load(directoryURL: dir,
@@ -17,7 +18,8 @@ import Metal
                                    expecting: .qwen36Toy())
         let runner = try RealForwardRunner(model: model,
                                            context: ctx,
-                                           maxContext: 64)
+                                           maxContext: 64,
+                                           runtimeConfiguration: runtimeConfiguration)
         return (dir, ctx, runner)
     }
 
@@ -28,6 +30,139 @@ import Metal
             throw ModelError.residentBufferWrapFailed
         }
         return buf
+    }
+
+    @Test func resetClearsKernelTimingGenerationState() throws {
+        let oldValue = ProcessInfo.processInfo.environment[KernelGPUStats.environmentKey]
+        setenv(KernelGPUStats.environmentKey, "1", 1)
+        defer {
+            if let oldValue {
+                setenv(KernelGPUStats.environmentKey, oldValue, 1)
+            } else {
+                unsetenv(KernelGPUStats.environmentKey)
+            }
+        }
+
+        let (dir, _, runner) = try makeRunner()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        runner.recordKernelGPUTiming(role: "embed", start: 1.0, end: 1.001)
+        #expect(!runner.kernelGPUTimingSummary().isEmpty)
+
+        runner.reset()
+
+        #expect(runner.kernelGPUTimingSummary().isEmpty)
+    }
+
+    @Test func continuationStartClearsKernelTimingRequestState() async throws {
+        let oldValue = ProcessInfo.processInfo.environment[KernelGPUStats.environmentKey]
+        setenv(KernelGPUStats.environmentKey, "1", 1)
+        defer {
+            if let oldValue {
+                setenv(KernelGPUStats.environmentKey, oldValue, 1)
+            } else {
+                unsetenv(KernelGPUStats.environmentKey)
+            }
+        }
+
+        let (dir, ctx, runner) = try makeRunner()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logits = try makeLogits(ctx, vocab: 1024)
+        try await runner.produce(token: 1, position: 0, into: logits)
+        #expect(!runner.kernelGPUTimingSummary().isEmpty)
+
+        try runner.prepareForContinuation(expectedPosition: 1)
+
+        #expect(runner.continuationPosition == 1)
+        #expect(runner.kernelGPUTimingSummary().isEmpty)
+    }
+
+    @Test func decodeKernelTimingsCoverRolesAndEveryRoutedLayer() async throws {
+        let oldValue = ProcessInfo.processInfo.environment[KernelGPUStats.environmentKey]
+        setenv(KernelGPUStats.environmentKey, "1", 1)
+        defer {
+            if let oldValue {
+                setenv(KernelGPUStats.environmentKey, oldValue, 1)
+            } else {
+                unsetenv(KernelGPUStats.environmentKey)
+            }
+        }
+
+        let (dir, ctx, runner) = try makeRunner()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logits = try makeLogits(ctx, vocab: 1024)
+
+        try await runner.produce(token: 1, position: 0, into: logits)
+
+        let byRole = Dictionary(uniqueKeysWithValues:
+            runner.kernelGPUTimingSummary().map { ($0.role, $0) })
+        #expect(Set(byRole.keys) == [
+            "embed", "attention_router", "shared_expert", "routed_moe", "fused_head",
+        ])
+        #expect(byRole["embed"]?.count == 1)
+        #expect(byRole["attention_router"]?.count == ArchConfig.qwen36Toy().numLayers)
+        #expect(byRole["shared_expert"]?.count == ArchConfig.qwen36Toy().numLayers)
+        #expect(byRole["routed_moe"]?.count == ArchConfig.qwen36Toy().numLayers)
+        #expect(byRole["fused_head"]?.count == 1)
+        #expect(byRole.values.allSatisfy { $0.gpuMilliseconds > 0 })
+    }
+
+    @Test func decodeKernelTimingsRecordLogitsHeadPath() async throws {
+        let oldValue = ProcessInfo.processInfo.environment[KernelGPUStats.environmentKey]
+        setenv(KernelGPUStats.environmentKey, "1", 1)
+        defer {
+            if let oldValue {
+                setenv(KernelGPUStats.environmentKey, oldValue, 1)
+            } else {
+                unsetenv(KernelGPUStats.environmentKey)
+            }
+        }
+
+        let (dir, ctx, runner) = try makeRunner(
+            runtimeConfiguration: RuntimeConfiguration(forceLogitsHead: true))
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logits = try makeLogits(ctx, vocab: 1024)
+
+        try await runner.produce(token: 1, position: 0, into: logits)
+
+        let byRole = Dictionary(uniqueKeysWithValues:
+            runner.kernelGPUTimingSummary().map { ($0.role, $0) })
+        #expect(byRole["logits_head"]?.count == 1)
+        #expect(byRole["fused_head"] == nil)
+    }
+
+    @Test func decodeKernelTimingsRecordPhaseOneHitsWhenPresent() async throws {
+        let oldValue = ProcessInfo.processInfo.environment[KernelGPUStats.environmentKey]
+        setenv(KernelGPUStats.environmentKey, "1", 1)
+        defer {
+            if let oldValue {
+                setenv(KernelGPUStats.environmentKey, oldValue, 1)
+            } else {
+                unsetenv(KernelGPUStats.environmentKey)
+            }
+        }
+
+        let dir = try QwenToySynthetic.write()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let ctx = try MetalContext()
+        let model = try Model.load(directoryURL: dir,
+                                   device: ctx.device,
+                                   expecting: .qwen36Toy())
+        _ = try await model.fetchRoutedExperts(layer: 0, experts: [0, 1, 2, 3])
+        let maybePlan = try model.planRoutedExperts(
+            layer: 0, experts: Array(0..<ArchConfig.qwen36Toy().numExperts))
+        let primedPlan = try #require(maybePlan)
+        #expect(primedPlan.hits == 4)
+        #expect(primedPlan.misses.count == 4)
+        let runner = try RealForwardRunner(model: model, context: ctx, maxContext: 64)
+        let logits = try makeLogits(ctx, vocab: 1024)
+
+        try await runner.produce(token: 1, position: 0, into: logits)
+
+        let phaseOne = runner.kernelGPUTimingSummary().first {
+            $0.role == "moe_phase1_hit"
+        }
+        #expect(phaseOne?.count == 1)
+        #expect((phaseOne?.gpuMilliseconds ?? 0) > 0)
     }
 
     /// (a) Runner init with the qwen arch: GDN kernels, state manager, and
