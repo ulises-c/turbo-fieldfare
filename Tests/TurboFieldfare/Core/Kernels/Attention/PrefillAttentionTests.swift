@@ -140,9 +140,10 @@ import TurboFieldfareValidationSupport
     ])
     func tensorOps2DFullAttentionMatchesReferenceAtTileBoundaries(_ visibleKeys: Int) throws {
         let context = try MetalContext()
-        // Hosted CI has no Apple10 GPU, so it returns without dispatching this
-        // kernel. Run this suite on Apple10 before changing the TensorOps path.
-        guard context.device.supportsFamily(.apple10) else { return }
+        let attention = try PrefillAttention(context: context)
+        // GPU family is not the capability test: this pipeline compiles and
+        // dispatches on the project's Apple8 M2 minimum.
+        guard attention.tensorOps2DValidityV2Available else { return }
         let fixture = Self.makeFixture(start: visibleKeys - 1,
                                        chunk: 1,
                                        window: 0,
@@ -186,10 +187,59 @@ import TurboFieldfareValidationSupport
                 "preferred TensorOps maxAbs=\(maxAbs) rel=\(rel)")
         #expect(rel <= 2e-2,
                 "preferred TensorOps rel=\(rel) maxAbs=\(maxAbs)")
-        if !context.device.supportsFamily(.apple10) {
+        let attention = try PrefillAttention(context: context)
+        if attention.tensorOps2DValidityV2Available {
+            let explicitTensorOps = try Self.runKernel(
+                fixture,
+                path: .fullTensorOps2DValidityV2)
+            #expect(preferred == explicitTensorOps)
+        } else {
             let baseline = try Self.runKernel(fixture, path: .causalTiled)
             #expect(preferred == baseline)
         }
+    }
+
+    @Test func preferredPathUsesTiledWhenTensorOpsIsUnavailable() throws {
+        let fixture = Self.makeFixture(start: 128,
+                                       chunk: 8,
+                                       window: 0,
+                                       seed: 0xA873,
+                                       headDim: 512,
+                                       qHeads: 16,
+                                       kvHeads: 2)
+        let preferred = try Self.runKernel(
+            fixture,
+            path: .fullTensorOps2DPreferred,
+            simulatingMissingTensorOps: true)
+        let tiled = try Self.runKernel(fixture, path: .causalTiled)
+
+        #expect(preferred == tiled)
+    }
+
+    /// TensorOps starts its key loop at zero, so a production-shaped request
+    /// with a clipping window must use the tiled path even when the pipeline is
+    /// available.
+    @Test func preferredTensorOpsPathRejectsAWindowThatActuallyClips() throws {
+        let context = try MetalContext()
+        let attention = try PrefillAttention(context: context)
+        guard attention.tensorOps2DValidityV2Available else { return }
+
+        let fixture = Self.makeFixture(start: 40,
+                                       chunk: 8,
+                                       window: 16,
+                                       seed: 0xA877,
+                                       headDim: 512,
+                                       qHeads: 16,
+                                       kvHeads: 2)
+        let preferred = try Self.runKernel(
+            fixture,
+            path: .fullTensorOps2DPreferred,
+            layerKindOverride: .full)
+        let tiled = try Self.runKernel(fixture,
+                                       path: .causalTiled,
+                                       layerKindOverride: .full)
+
+        #expect(RelError.maxAbsDiff(preferred, tiled) == 0)
     }
 
     private static func makeFixture(start: Int,
@@ -315,10 +365,13 @@ import TurboFieldfareValidationSupport
     private static func runKernel(
         _ fixture: Fixture,
         kvRingCapacity: UInt32 = 0,
-        path: RuntimePrefillAttentionPath = .causalTiled
+        path: RuntimePrefillAttentionPath = .causalTiled,
+        simulatingMissingTensorOps: Bool = false,
+        layerKindOverride: PrefillAttentionLayerKind? = nil
     ) throws -> [Float] {
         let ctx = try MetalContext()
-        let prefill = try PrefillAttention(context: ctx)
+        let prefill = try PrefillAttention(
+            context: ctx, simulatingMissingTensorOps: simulatingMissingTensorOps)
         let qPrefix = 17
         let kPrefix = 19
         let vPrefix = 23
@@ -363,10 +416,12 @@ import TurboFieldfareValidationSupport
                              outOffset: oPrefix * MemoryLayout<Float16>.size,
                              params: params,
                              kvRingCapacity: kvRingCapacity,
-                             layerKind: fixture.window == 0 ? .full : .slidingWindow,
+                             layerKind: layerKindOverride
+                                 ?? (fixture.window == 0 ? .full : .slidingWindow),
                              path: path)
         cb.commit()
         cb.waitUntilCompleted()
+        try checkCommandBufferError(cb)
 
         let out = Fp16Buffer.read(outBuf, count: outCount)
         var compact = [Float](repeating: 0, count: fixture.chunk * fixture.qHeads * fixture.headDim)
