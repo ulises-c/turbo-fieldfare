@@ -1,5 +1,8 @@
 import TurboFieldfare
 
+/// The app's context menu. Every case is a rung of `ContextAdmission.ladder`,
+/// and `appOffersEveryAdmissibleLadderRung` in the tests enforces that the two
+/// stay in step so the menu cannot drift from what the CLI and server accept.
 public enum AppContextLengthOption: Int, CaseIterable, Identifiable, Sendable {
     case fourK = 4_096
     case eightK = 8_192

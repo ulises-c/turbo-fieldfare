@@ -69,36 +69,44 @@ took about 32 minutes of prefill on the M5 Max, and the M4 is slower.
 
 ## Qwen 3.6 35B-A3B
 
-| Context | KV |
-|---:|---:|
-| 4K | 141 MB |
-| 8K | 221 MB |
-| 16K | 381 MB |
-| 32K | 701 MB |
-| 64K | 1,341 MB |
-| 96K | 1,981 MB |
-| 128K | 2,621 MB |
-| 192K | 3,901 MB |
-| 256K | 5,181 MB |
+| Context | KV | Total resident | M4 16 GB | M5 Max 36 GB |
+|---:|---:|---:|---|---|
+| 4K | 141 MB | 3.23 GiB | fits, 8.0 GiB free | fits, 22.0 GiB free |
+| 8K | 221 MB | 3.31 GiB | fits, 7.9 GiB free | fits, 21.9 GiB free |
+| 16K | 381 MB | 3.46 GiB | fits, 7.7 GiB free | fits, 21.7 GiB free |
+| 32K | 701 MB | 3.78 GiB | fits, 7.4 GiB free | fits, 21.4 GiB free |
+| 64K | 1,341 MB | 4.40 GiB | fits, 6.8 GiB free | fits, 20.8 GiB free |
+| 96K | 1,981 MB | 5.03 GiB | fits, 6.2 GiB free | fits, 20.2 GiB free |
+| 128K | 2,621 MB | 5.65 GiB | fits, 5.5 GiB free | fits, 19.5 GiB free |
+| 192K | 3,901 MB | 6.90 GiB | fits, 4.3 GiB free | fits, 18.3 GiB free |
+| 256K | 5,181 MB | 8.15 GiB | fits, 3.0 GiB free | fits, 17.0 GiB free |
 
-Qwen's KV is exact and derived the same way, but the **total** column is
-deliberately absent: the pack is not installed in this checkout, so its
-resident/streamed split cannot be read from a manifest, and its runtime
-overhead has never been measured. Filling those cells with Gemma's constants
-would be a guess wearing a measurement's clothes. Install the pack and re-run
-`--validate` to complete the table.
+Qwen's resident split comes from a real install measured 2026-07-31 on an
+M5 24 GB host (`docs/QWEN36_PERFORMANCE.md`): 1.39 GB of mapped common
+weights and 1.13 GB of routed-expert slots at 16 per layer. That measurement
+independently corroborates this table's KV model to within rounding —
+it reported 84 MB KV and 64 MB recurrent state at 4K, against 80 MiB
+(83.9 MB) and 61 MiB (64.0 MB) predicted here.
 
-What is already established from the architecture:
+Architectural properties that follow:
 
 - Qwen holds a **fixed 61 MiB** of gated-DeltaNet recurrent state that does
   not grow with context, in place of 30 layers of per-token K/V rows.
 - Its KV is consistently **~160 MB below Gemma's** at every rung despite being
   a larger model, because only 10 of its 40 layers keep per-token K/V.
+- Its expert slots are **smaller** than Gemma's (1.13 GB vs 1.61 GB at 16
+  slots), so its higher total here is driven by mapped common weights, not
+  by the context.
 - The FP16 ring is a **no-op** for Qwen: with no sliding-window layers,
   `--prefill off` costs it nothing. At 256K unringed it needs 5 GiB where
   Gemma needs 55 GiB. This is why the `--prefill off` guard is a KV budget
   rather than a context constant — a single context bound would reject a
   configuration Qwen can serve comfortably.
+
+**Not measured for Qwen:** no long-context ladder has been run against it.
+The 2026-07-31 session measured 4K only, and the runtime-overhead constant in
+the total column is Gemma's, carried over. The KV column is exact; treat the
+totals above 4K as projections until a Qwen ladder run exists.
 
 ## Choosing a context cap
 

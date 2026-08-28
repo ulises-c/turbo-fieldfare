@@ -51,7 +51,8 @@ RUNTIME_OVERHEAD_BYTES = 762 * MIB
 class Arch:
     def __init__(self, name, mask, num_kv_heads, head_dim, num_full_kv_heads,
                  full_head_dim, sliding_window, resident_weight_bytes,
-                 expert_stride, installed_bytes, linear=None, measured=True):
+                 expert_stride, installed_bytes, linear=None, measured=True,
+                 overhead_is_borrowed=False):
         self.name = name
         self.mask = mask
         self.num_kv_heads = num_kv_heads
@@ -65,6 +66,9 @@ class Arch:
         self.linear = linear
         # False when the resident/streamed split has not been measured.
         self.measured = measured
+        # True when the runtime-overhead constant was measured on a DIFFERENT
+        # architecture and carried over, so totals are projections.
+        self.overhead_is_borrowed = overhead_is_borrowed
 
     @property
     def sliding_bytes_per_token(self):
@@ -128,15 +132,23 @@ GEMMA = Arch("Gemma 4 26B-A4B", gemma_mask(), 8, 256, 2, 512, 1024,
              installed_bytes=14_291_921_884,
              measured=True)
 
-# Qwen KV geometry is from ArchConfig.qwen36_35B_A3B. The resident split is a
-# placeholder mirroring Gemma's shape and is NOT measured -- see module docs.
+# Qwen KV geometry is from ArchConfig.qwen36_35B_A3B. The resident split is
+# measured: docs/QWEN36_PERFORMANCE.md, 2026-07-31, M5 24 GB, against an
+# installed scratch/qwen36.gturbo -- 1.39 GB mapped common weights and 1.13 GB
+# of routed-expert slots at 16 per layer (70.6 MB per slot).
+#
+# That session also corroborates the KV model here to within rounding: it
+# reported 84 MB KV and 64 MB recurrent state at 4K, against 80 MiB (83.9 MB)
+# and 61 MiB (64.0 MB) predicted. It measured 4K ONLY -- no Qwen long-context
+# ladder exists, and RUNTIME_OVERHEAD_BYTES below is Gemma's, carried over.
 QWEN = Arch("Qwen 3.6 35B-A3B", qwen_mask(), 2, 256, 2, 256, 0,
-            resident_weight_bytes=None,
-            expert_stride=None,
+            resident_weight_bytes=1_390_000_000,
+            expert_stride=70_625_000,
             installed_bytes=19_546_491_213,
             linear={"num_k_heads": 16, "num_v_heads": 32, "key_head_dim": 128,
                     "value_head_dim": 128, "conv_kernel_size": 4},
-            measured=False)
+            measured=True,
+            overhead_is_borrowed=True)
 
 DEVICES = [("M4 16 GB", 16 * GIB), ("M5 Max 36 GB", 36 * GIB)]
 CONTEXTS = [4096, 8192, 16384, 32768, 65536, 98304, 131072, 196608, 262144]
@@ -161,6 +173,12 @@ MEASURED_GEMMA_RUNGS = [
 # it to the largest prompt you might ever send costs that memory on every
 # request, including trivial ones.
 CAP_DRIVEN_ALLOCATION_CHECK = (262_144, 14, 7_268)
+
+# Independent corroboration of the KV model from a real Qwen install, measured
+# 2026-07-31 on an M5 24 GB host (docs/QWEN36_PERFORMANCE.md). These are the
+# doc's decimal-MB figures at 4K context; the model must reproduce them to
+# within 1 MB. This is the only Qwen memory measurement that exists.
+QWEN_4K_CORROBORATION = {"kv_excluding_state_mb": 84, "linear_state_mb": 64}
 
 # Share of unified memory available to one process before the system leans on
 # swap. Deliberately conservative: the OS and UI need the rest.
@@ -194,6 +212,25 @@ def validate():
     if projected_mb < measured_mb:
         ok = False
     print()
+
+    # Qwen: the KV model is checked against the one real Qwen measurement.
+    kv_total = QWEN.kv_bytes(4096)
+    kv_only_mb = (kv_total - QWEN.linear_state_bytes) / 1e6
+    state_mb = QWEN.linear_state_bytes / 1e6
+    exp_kv = QWEN_4K_CORROBORATION["kv_excluding_state_mb"]
+    exp_state = QWEN_4K_CORROBORATION["linear_state_mb"]
+    print("Qwen 4K corroboration (M5 24 GB, 2026-07-31, real install)")
+    print(f"  KV excluding state: measured {exp_kv} MB vs "
+          f"modelled {kv_only_mb:.1f} MB")
+    print(f"  Recurrent state:    measured {exp_state} MB vs "
+          f"modelled {state_mb:.1f} MB")
+    if abs(kv_only_mb - exp_kv) > 1 or abs(state_mb - exp_state) > 1:
+        ok = False
+        print("  MISMATCH: the KV model disagrees with the Qwen measurement.")
+    else:
+        print("  Agrees within rounding.")
+    print()
+
     if ok:
         print("PASS: the projection covers every measured point.")
     else:
@@ -210,7 +247,10 @@ def emit(arch, fmt, slots):
         print(f"Resident weights: {arch.resident_weight_bytes / MIB:,.0f} MiB")
         print(f"Expert cache at {slots} slots: "
               f"{slots * arch.expert_stride / MIB:,.0f} MiB")
-        print(f"Runtime overhead: {RUNTIME_OVERHEAD_BYTES / MIB:,.0f} MiB (measured)")
+        overhead_note = ("MiB (borrowed from Gemma -- unmeasured here)"
+                         if arch.overhead_is_borrowed else "MiB (measured)")
+        print(f"Runtime overhead: {RUNTIME_OVERHEAD_BYTES / MIB:,.0f} "
+              f"{overhead_note}")
     else:
         print("Resident weights / expert stride: NOT MEASURED "
               "(pack not installed in this checkout)")

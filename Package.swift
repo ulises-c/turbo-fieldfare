@@ -167,6 +167,9 @@ let package = Package(
             name: "TurboFieldfareServerTests",
             dependencies: [
                 "TurboFieldfareServerCore",
+                // The context-admission parity tests assert the CLI and the
+                // server accept exactly the same contexts, so they need both.
+                "TurboFieldfareCLICore",
                 .product(name: "NIOEmbedded", package: "swift-nio"),
             ],
             path: "Tests/TurboFieldfareServer",

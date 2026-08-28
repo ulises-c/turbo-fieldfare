@@ -79,7 +79,7 @@ public struct ServerArguments: Equatable, Sendable {
     // bound is checked here before the initializer runs.
     public func resolvedRuntimeConfiguration(
         forceLogitsHead: Bool = true,
-        family: ModelFamily = .gemma4
+        family: ModelFamily? = nil
     ) throws -> RuntimeConfiguration {
         guard RuntimeConfiguration.allowedExpertCacheSlots.contains(expertCacheSlots) else {
             throw ServerArgumentError.invalid("--expert-cache-slots must be 8, 16, 24, or 32")
@@ -96,16 +96,16 @@ public struct ServerArguments: Equatable, Sendable {
             throw ServerArgumentError.invalid(
                 "--expert-cache-slots \(expertCacheSlots) requires --prefill off")
         }
-        let arch = ArchConfig.knownArchitectures[family] ?? .gemma4_26B_A4B
-        let unringedKV = arch.kvFootprint(maxContext: maxContext,
-                                          prefillChunkTokens: prefillChunkTokens,
-                                          ringEnabled: false).totalBytes
-        guard prefillPolicy == .chunked || unringedKV <= Self.maximumUnchunkedKVBytes else {
+        do {
+            try ContextAdmission.check(
+                maxContext: maxContext,
+                family: family,
+                prefillEnabled: prefillPolicy == .chunked,
+                prefillChunkTokens: prefillChunkTokens)
+        } catch let rejection as ContextAdmission.Rejection {
             throw ServerArgumentError.invalid(
-                "--max-context \(maxContext) requires --prefill on for \(family.rawValue); "
-                    + "without chunked prefill every layer allocates KV at the full "
-                    + "context instead of the sliding-window ring, which needs about "
-                    + "\(Self.unchunkedKVGibibytes(maxContext, arch)) GiB of KV alone")
+                rejection.message(subject: "--max-context \(maxContext)",
+                                  prefillRemedy: "--prefill on"))
         }
         return RuntimeConfiguration(
             expertCacheSlots: expertCacheSlots,
@@ -153,11 +153,14 @@ public struct ServerArguments: Equatable, Sendable {
                 }
                 modelIDOverride = value
             case "--max-context":
+                // The ladder lives in ContextAdmission so this parser, the CLI,
+                // the app menu, and the docs cannot drift apart.
                 guard let parsed = Int(value),
-                      [4_096, 8_192, 16_384, 32_768, 65_536, 98_304, 131_072,
-                       196_608, 262_144]
-                        .contains(parsed) else {
-                    throw ServerArgumentError.invalid("--max-context is not supported")
+                      ContextAdmission.ladder.contains(parsed) else {
+                    throw ServerArgumentError.invalid(
+                        "--max-context \(value) is not one of "
+                            + ContextAdmission.ladder
+                                .map(String.init).joined(separator: ", "))
                 }
                 maxContext = parsed
             case "--queue-limit":

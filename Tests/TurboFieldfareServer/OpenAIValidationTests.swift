@@ -767,6 +767,10 @@ struct ServerArgumentTests {
     /// hold `slidingWindow + chunkTokens` tokens each instead of `maxContext`.
     /// `--prefill off` drops the ring, so a ladder context would allocate tens
     /// of gigabytes of KV and fail at load rather than at argument parsing.
+    ///
+    /// The family is named explicitly because this bound is Gemma's. Passing
+    /// no family means "not yet identified", which admits anything a supported
+    /// model could run; the strict check happens once the manifest is read.
     @Test(arguments: [98_304, 131_072, 196_608, 262_144])
     func unchunkedPrefillIsRejectedAboveTheRingBackedContexts(
         _ maxContext: Int
@@ -777,7 +781,7 @@ struct ServerArgumentTests {
             "--prefill", "off",
         ])
         #expect(throws: ServerArgumentError.self) {
-            try arguments.resolvedRuntimeConfiguration()
+            try arguments.resolvedRuntimeConfiguration(family: .gemma4)
         }
     }
 

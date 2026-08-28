@@ -1,0 +1,15 @@
+{
+  "session_id": "a2ebf78d-f48a-4932-a2b8-646611e1b9ad",
+  "tool_call_count": 0,
+  "suspicion_level": 0,
+  "warning_count": 0,
+  "block_history": [],
+  "heightened_until_call": null,
+  "heightened_keywords": [],
+  "session_approvals": [],
+  "pending_approval": null,
+  "project_root": "/Users/ulises/github/turbo-fieldfare-ulises",
+  "terminated": false,
+  "termination_reason": null,
+  "termination_timestamp": null
+}

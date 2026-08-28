@@ -3,15 +3,19 @@ import TurboFieldfare
 @testable import TurboFieldfareAppCore
 
 @Suite struct AppContextLengthOptionTests {
+    /// The menu is the shared ladder, not a parallel list. Deriving the
+    /// expectation from `ContextAdmission.ladder` means adding a rung to one
+    /// and not the other fails here instead of shipping a menu entry the CLI
+    /// and server would reject.
     @Test func optionsUseSupportedContextLengthsInAscendingOrder() {
         #expect(AppContextLengthOption.allCases.map(\.tokens)
-            == [4_096, 8_192, 16_384, 32_768, 65_536,
-                98_304, 131_072, 196_608, 262_144])
+            == ContextAdmission.ladder)
     }
 
     /// The top option is the native context both supported families advertise.
     @Test func theLargestOptionIsTheNativeMaximum() {
-        #expect(AppContextLengthOption.allCases.last?.tokens == 262_144)
+        #expect(AppContextLengthOption.allCases.last?.tokens
+            == ContextAdmission.nativeMaximumContext)
     }
 
     @Test func optionsReportProductionFP16KVAllocation() {
