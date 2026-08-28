@@ -3,7 +3,7 @@ import TurboFieldfareRepackCore
 
 private let usage = """
 Usage:
-  TurboFieldfareRepack --output <model.gturbo> [--overwrite] [--resume]
+  TurboFieldfareRepack [--model <gemma4|qwen36>] --output <model.gturbo> [--overwrite] [--resume]
   TurboFieldfareRepack --discard-partial --output <model.gturbo>
   TurboFieldfareRepack --verify-install --input-gturbo <model.gturbo>
   TurboFieldfareRepack --vision-output <model.vision.gturbo>
@@ -20,17 +20,21 @@ Usage:
                        --vision-output <model.vision.gturbo>
   TurboFieldfareRepack --help
 
-The installer streams the supported Gemma 4 checkpoint from Hugging Face and
-repackages it without materializing the source checkpoint on disk. Set HF_TOKEN
-only if Hugging Face requests authentication. A cancelled or interrupted
-download can be continued with --resume or removed with --discard-partial.
+The installer streams the selected checkpoint (default: the supported Gemma 4
+checkpoint) from Hugging Face and repackages it without materializing the
+source checkpoint on disk. Set HF_TOKEN only if Hugging Face requests
+authentication. A cancelled or interrupted download can be continued with
+--resume or removed with --discard-partial.
 
 The optional image companion pack installs beside an existing text model and
 is bound to it. Without the pack the text runtime is unchanged; image input is
-simply unavailable.
+simply unavailable. Image support is a Gemma 4 capability; the image pack
+cannot be built against a model from a family that has no vision tower.
 """
 
 private struct Arguments {
+    var model = SupportedModelSource.default
+    var modelSelected = false
     var output: String?
     var overwrite = false
     var resume = false
@@ -84,6 +88,18 @@ private struct Arguments {
                 }
                 parsed.textModel = values[index + 1]
                 index += 2
+            case "--model":
+                guard index + 1 < values.count else {
+                    throw ParseError.missingValue(flag)
+                }
+                guard let source = SupportedModelSource.named(values[index + 1]) else {
+                    throw ParseError.invalidMode(
+                        "unknown model \"\(values[index + 1])\"; supported: "
+                        + SupportedModelSource.all.map(\.name).joined(separator: ", "))
+                }
+                parsed.model = source
+                parsed.modelSelected = true
+                index += 2
             case "--output", "--input-gturbo":
                 guard index + 1 < values.count else {
                     throw ParseError.missingValue(flag)
@@ -113,6 +129,15 @@ private struct Arguments {
                   !parsed.verifyInstall else {
                 throw ParseError.invalidMode(
                     "vision install operations do not accept text install arguments")
+            }
+            // The image pack is bound to an already-installed text model, so a
+            // family selector here has nothing to act on. Rejecting it keeps a
+            // `--model qwen36 --vision-output ...` invocation from looking as
+            // though it produced a Qwen image pack.
+            guard !parsed.modelSelected else {
+                throw ParseError.invalidMode(
+                    "--model does not apply to image-pack operations; the pack's "
+                        + "family comes from the --text-model it is bound to")
             }
             // Discard runs first below, so accepting it alongside another mode
             // would silently perform the discard and exit 0 without ever doing
@@ -250,8 +275,8 @@ private func runVisionInstall(_ arguments: Arguments) async -> Int32? {
             try RemoteVisionPackInstaller.activatePrepared(
                 outputDirectory: visionOutput,
                 textModelDirectory: textModel,
-                repoID: SupportedModelSource.repoID,
-                requestedRevision: SupportedModelSource.revision)
+                repoID: SupportedModelSource.gemma4.repoID,
+                requestedRevision: SupportedModelSource.gemma4.revision)
             print("Activated image pack \(visionOutput)")
             return 0
         } catch {
@@ -260,9 +285,12 @@ private func runVisionInstall(_ arguments: Arguments) async -> Int32? {
         }
     }
 
+    // The image pack is Gemma 4's vision tower. It is pinned to the Gemma
+    // source regardless of --model, and `parseVisionArguments` rejects pairing
+    // it with another family, so this never silently repacks Qwen weights.
     let options = RemoteVisionPackInstallOptions(
-        repoID: SupportedModelSource.repoID,
-        revision: SupportedModelSource.revision,
+        repoID: SupportedModelSource.gemma4.repoID,
+        revision: SupportedModelSource.gemma4.revision,
         textModelDirectory: textModel,
         outputDirectory: visionOutput,
         token: ProcessInfo.processInfo.environment["HF_TOKEN"],
@@ -322,7 +350,8 @@ private func run(_ values: [String]) async -> Int32 {
     }
 
     guard let output = arguments.output else { return 2 }
-    let options = SupportedModelSource.installOptions(
+    let source = arguments.model
+    let options = source.installOptions(
         outputDirectory: URL(fileURLWithPath: output),
         overwrite: arguments.overwrite,
         token: ProcessInfo.processInfo.environment["HF_TOKEN"],
@@ -331,7 +360,7 @@ private func run(_ values: [String]) async -> Int32 {
         let progress = InstallProgressReporter()
         let result = try await RemoteStreamingRepacker(options: options).run(
             progress: { progress($0) })
-        print("Installed \(SupportedModelSource.displayName)")
+        print("Installed \(source.displayName)")
         print("Source revision: \(result.resolvedCommit)")
         print("Model: \(result.outputDir)")
         return 0

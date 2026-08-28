@@ -37,13 +37,15 @@ do {
         visionResidencyPolicy: arguments.visionResidency,
         promptCacheMode: arguments.promptCacheMode,
         runtimeConfiguration: runtimeConfiguration)
+    let modelID = arguments.modelIDOverride ?? backend.defaultModelID
     let server = TurboFieldfareHTTPServer(
-        modelID: arguments.modelID,
+        modelID: modelID,
         queueLimit: arguments.queueLimit,
         backend: backend,
+        chatDialect: backend.chatDialect,
         visionCapability: backend.visionCapability)
     _ = try await server.start(port: arguments.port)
-    print("TurboFieldfareServer ready at http://127.0.0.1:\(arguments.port) model=\(arguments.modelID) context=\(arguments.maxContext) prompt_cache=\(arguments.promptCacheMode.rawValue) vision=\(backend.visionCapability) vision_residency=\(arguments.visionResidency.rawValue)")
+    print("TurboFieldfareServer ready at http://127.0.0.1:\(arguments.port) model=\(modelID) context=\(arguments.maxContext) prompt_cache=\(arguments.promptCacheMode.rawValue) vision=\(backend.visionCapability) vision_residency=\(arguments.visionResidency.rawValue)")
 
     _ = await signals.wait()
     try await server.shutdown()
