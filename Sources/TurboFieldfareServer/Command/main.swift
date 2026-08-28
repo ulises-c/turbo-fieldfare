@@ -15,8 +15,13 @@ let runtimeConfiguration: RuntimeConfiguration
 do {
     arguments = try ServerArguments.parse(Array(CommandLine.arguments.dropFirst()))
     // Resolved here so an unusable flag combination exits with usage instead of
-    // failing after the model has started loading.
-    runtimeConfiguration = try arguments.resolvedRuntimeConfiguration()
+    // failing after the model has started loading. The KV budget that gates
+    // `--prefill off` is architecture-dependent, so read the family from the
+    // manifest first; a directory we cannot peek falls back to the Gemma 4
+    // default, which is the stricter bound.
+    let family = (try? ManifestReader.peekFamily(
+        directoryURL: URL(fileURLWithPath: arguments.model).standardizedFileURL)) ?? .gemma4
+    runtimeConfiguration = try arguments.resolvedRuntimeConfiguration(family: family)
 } catch ServerArgumentError.help {
     print(ServerArguments.usage)
     exit(0)
@@ -37,13 +42,15 @@ do {
         visionResidencyPolicy: arguments.visionResidency,
         promptCacheMode: arguments.promptCacheMode,
         runtimeConfiguration: runtimeConfiguration)
+    let modelID = arguments.modelIDOverride ?? backend.defaultModelID
     let server = TurboFieldfareHTTPServer(
-        modelID: arguments.modelID,
+        modelID: modelID,
         queueLimit: arguments.queueLimit,
         backend: backend,
+        chatDialect: backend.chatDialect,
         visionCapability: backend.visionCapability)
     _ = try await server.start(port: arguments.port)
-    print("TurboFieldfareServer ready at http://127.0.0.1:\(arguments.port) model=\(arguments.modelID) context=\(arguments.maxContext) prompt_cache=\(arguments.promptCacheMode.rawValue) vision=\(backend.visionCapability) vision_residency=\(arguments.visionResidency.rawValue)")
+    print("TurboFieldfareServer ready at http://127.0.0.1:\(arguments.port) model=\(modelID) context=\(arguments.maxContext) prompt_cache=\(arguments.promptCacheMode.rawValue) vision=\(backend.visionCapability) vision_residency=\(arguments.visionResidency.rawValue)")
 
     _ = await signals.wait()
     try await server.shutdown()

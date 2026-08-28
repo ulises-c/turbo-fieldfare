@@ -233,7 +233,8 @@ actor RealInferenceSession {
                 maxContext: key.maxContext,
                 runtimeConfiguration: runtimeConfiguration)
             let loadedScratch = try RawCompletionScratch(context: context,
-                                                         vocab: loadedModel.config.vocabSize)
+                                                         vocab: loadedModel.config.vocabSize,
+                                                         logitSoftcap: Float(loadedModel.config.finalLogitSoftcap))
             try Task.checkCancellation()
 
             let loadedVisionRuntime: VisionRuntime?

@@ -4,7 +4,10 @@ import TurboFieldfare
 public struct ServerArguments: Equatable, Sendable {
     public let model: String
     public let port: Int
-    public let modelID: String
+    /// Explicit --model-id value; nil defers to the loaded model's family
+    /// default (gemma-4-26b-a4b-it or qwen3.6-35b-a3b).
+    public let modelIDOverride: String?
+    public var modelID: String { modelIDOverride ?? "gemma-4-26b-a4b-it" }
     public let maxContext: Int
     public let queueLimit: Int
     public let promptCacheMode: ServerPromptCacheMode
@@ -24,9 +27,12 @@ public struct ServerArguments: Equatable, Sendable {
       --vision-residency <on-demand|keep-ready>
                                  Routed-expert residency during vision (default on-demand).
       --port <1...65535>         Loopback port (default 8080).
-      --model-id <id>            API model identifier (default gemma-4-26b-a4b-it).
+      --model-id <id>            API model identifier (default derived from the
+                                 installed model: gemma-4-26b-a4b-it or
+                                 qwen3.6-35b-a3b).
       --max-context <tokens>     4096, 8192, 16384, 32768, 65536, 98304,
                                  131072, 196608, or 262144 (default 16384).
+                                 Both supported families are natively 262144.
                                  Above 65536 requires --prefill on.
       --queue-limit <count>      Maximum queued requests (default 4).
       --prompt-cache-mode <off|single-prefix>
@@ -46,24 +52,25 @@ public struct ServerArguments: Equatable, Sendable {
     // Chunked prefill is what keeps a long context affordable: `KVCacheManager`
     // only caps the sliding-window layers at `slidingWindow + chunkTokens` when
     // the FP16 ring is enabled, which happens under chunked prefill. With
-    // `--prefill off` every layer instead allocates KV at the full context, so
-    // the same cap costs roughly an order of magnitude more. 64K is the largest
-    // context that was reachable before the Gemma 4 ladder rungs were added, so
-    // this bound rejects only the newly reachable combinations.
-    static let maximumUnchunkedPrefillContext = 65_536
+    // `--prefill off` every layer instead allocates KV at the full context.
+    //
+    // The bound is a KV *budget*, not a context constant, because the cost of
+    // dropping the ring is architecture-dependent. Gemma 4 has 25 sliding-window
+    // layers, so unringed KV explodes (13.75 GiB at 64K, 55 GiB at 256K). Qwen
+    // 3.6 has none — its 30 linear layers hold a fixed recurrent state — so the
+    // ring changes nothing and even 256K costs 5 GiB. A single context cap would
+    // therefore reject a combination Qwen can serve comfortably.
+    //
+    // 16 GiB preserves the previous Gemma behavior exactly: 64K (13.75 GiB) was
+    // the largest reachable context before the ladder rungs and stays allowed,
+    // while 96K (20.62 GiB) and above are rejected.
+    static let maximumUnchunkedKVBytes = 16 * 1_073_741_824
 
-    /// Approximate FP16 KV footprint, in GiB, when every layer is allocated at
-    /// `maxContext` because the sliding-window ring is disabled. Used only to
-    /// make the rejection message concrete.
-    static func unchunkedKVGibibytes(_ maxContext: Int) -> String {
-        let arch = ArchConfig.gemma4_26B_A4B
-        let fullLayers = arch.fullAttentionLayerMask.filter { $0 != 0 }.count
-        let slidingLayers = arch.numLayers - fullLayers
-        let slidingStride = arch.numKVHeads * arch.headDim * 2
-        let fullStride = arch.numFullKVHeads * arch.fullHeadDim * 2
-        let bytes = 2 * maxContext
-            * (slidingLayers * slidingStride + fullLayers * fullStride)
-        return String(format: "%.0f", Double(bytes) / 1_073_741_824)
+    /// Approximate FP16 KV footprint, in GiB, when the sliding-window ring is
+    /// disabled. Used only to make the rejection message concrete.
+    static func unchunkedKVGibibytes(_ maxContext: Int, _ arch: ArchConfig) -> String {
+        let footprint = arch.kvFootprint(maxContext: maxContext, ringEnabled: false)
+        return String(format: "%.0f", footprint.totalGibibytes)
     }
 
     // Mirrors the CLI's runtime flags so both binaries accept the same options
@@ -71,7 +78,8 @@ public struct ServerArguments: Equatable, Sendable {
     // defaults. RuntimeConfiguration traps on unsupported values, so every
     // bound is checked here before the initializer runs.
     public func resolvedRuntimeConfiguration(
-        forceLogitsHead: Bool = true
+        forceLogitsHead: Bool = true,
+        family: ModelFamily = .gemma4
     ) throws -> RuntimeConfiguration {
         guard RuntimeConfiguration.allowedExpertCacheSlots.contains(expertCacheSlots) else {
             throw ServerArgumentError.invalid("--expert-cache-slots must be 8, 16, 24, or 32")
@@ -88,12 +96,16 @@ public struct ServerArguments: Equatable, Sendable {
             throw ServerArgumentError.invalid(
                 "--expert-cache-slots \(expertCacheSlots) requires --prefill off")
         }
-        guard prefillPolicy == .chunked || maxContext <= Self.maximumUnchunkedPrefillContext else {
+        let arch = ArchConfig.knownArchitectures[family] ?? .gemma4_26B_A4B
+        let unringedKV = arch.kvFootprint(maxContext: maxContext,
+                                          prefillChunkTokens: prefillChunkTokens,
+                                          ringEnabled: false).totalBytes
+        guard prefillPolicy == .chunked || unringedKV <= Self.maximumUnchunkedKVBytes else {
             throw ServerArgumentError.invalid(
-                "--max-context \(maxContext) requires --prefill on; "
+                "--max-context \(maxContext) requires --prefill on for \(family.rawValue); "
                     + "without chunked prefill every layer allocates KV at the full "
                     + "context instead of the sliding-window ring, which needs about "
-                    + "\(Self.unchunkedKVGibibytes(maxContext)) GiB of KV alone")
+                    + "\(Self.unchunkedKVGibibytes(maxContext, arch)) GiB of KV alone")
         }
         return RuntimeConfiguration(
             expertCacheSlots: expertCacheSlots,
@@ -107,7 +119,7 @@ public struct ServerArguments: Equatable, Sendable {
     public static func parse(_ input: [String]) throws -> ServerArguments {
         var model: String?
         var port = 8080
-        var modelID = "gemma-4-26b-a4b-it"
+        var modelIDOverride: String?
         var maxContext = 16_384
         var queueLimit = 4
         var promptCacheMode: ServerPromptCacheMode = .singlePrefix
@@ -139,7 +151,7 @@ public struct ServerArguments: Equatable, Sendable {
                 guard !value.isEmpty else {
                     throw ServerArgumentError.invalid("--model-id must not be empty")
                 }
-                modelID = value
+                modelIDOverride = value
             case "--max-context":
                 guard let parsed = Int(value),
                       [4_096, 8_192, 16_384, 32_768, 65_536, 98_304, 131_072,
@@ -203,7 +215,7 @@ public struct ServerArguments: Equatable, Sendable {
         guard let model else { throw ServerArgumentError.invalid("--model is required") }
         return ServerArguments(model: model,
                                port: port,
-                               modelID: modelID,
+                               modelIDOverride: modelIDOverride,
                                maxContext: maxContext,
                                queueLimit: queueLimit,
                                promptCacheMode: promptCacheMode,

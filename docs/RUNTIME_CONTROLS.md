@@ -25,6 +25,18 @@ benchmark protocol.
 
 ## Runtime settings
 
+| Control | Values | CLI flag | Production default | Effect |
+| --- | --- | --- | --- | --- |
+| Expert-cache slots | 8, 16, 24, 32 | `--expert-cache-slots` | 16 | More slots can retain more routed experts and reduce later reads, but values above 16 use more RAM. |
+| Prompt prefill | On, off | `--prefill` | On | On processes known prompt tokens through the chunked prefill path. Off disables that path. |
+| RDADVISE | Off, Default, Bounded, Adaptive | `--rdadvise` | Off | Applies experimental read advice. Its effect depends on the workload; it may help a short decode and slow a long one. |
+
+The CLI applies these settings when it loads the model, so each run uses the
+values passed on its command line. Setting `TURBO_FIELDFARE_PHASES=1` makes the
+CLI print the decode phase split (`cb1`, expert I/O await, `cb2`, and GPU
+waits) after the timing footer; it is a diagnostic and does not change
+behavior.
+
 The CLI and the [local server](OPENAI_SERVER.md) accept these flags with the
 same names and values. Their defaults agree except for `--max-context`, which
 the server defaults to 16,384 rather than 8,192. The server resolves them before it loads the

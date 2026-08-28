@@ -807,6 +807,74 @@ struct ServerArgumentTests {
         #expect(configuration.prefillPolicy == .chunked)
     }
 
+    /// The `--prefill off` bound is a KV budget, not a context constant, so it
+    /// has to be evaluated per family. Qwen 3.6 has no sliding-window layers —
+    /// its 30 gated-DeltaNet layers hold a fixed recurrent state — so dropping
+    /// the ring costs it nothing and every ladder rung stays serviceable.
+    /// Applying Gemma's bound here would reject a working configuration.
+    @Test(arguments: [98_304, 131_072, 196_608, 262_144])
+    func unchunkedPrefillStaysAllowedForQwenAtLadderContexts(
+        _ maxContext: Int
+    ) throws {
+        let arguments = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--max-context", String(maxContext),
+            "--prefill", "off",
+        ])
+        let configuration = try arguments.resolvedRuntimeConfiguration(family: .qwen36)
+        #expect(configuration.prefillPolicy == .off)
+    }
+
+    /// Matched control for the case above: the identical arguments must still
+    /// be rejected for Gemma, so the Qwen result reflects the architecture and
+    /// not a guard that stopped working.
+    @Test(arguments: [98_304, 131_072, 196_608, 262_144])
+    func unchunkedPrefillStaysRejectedForGemmaAtLadderContexts(
+        _ maxContext: Int
+    ) throws {
+        let arguments = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--max-context", String(maxContext),
+            "--prefill", "off",
+        ])
+        #expect(throws: ServerArgumentError.self) {
+            try arguments.resolvedRuntimeConfiguration(family: .gemma4)
+        }
+    }
+
+    /// Both families are natively 262,144 and both must reach it on the
+    /// supported path (chunked prefill).
+    @Test(arguments: [ModelFamily.gemma4, ModelFamily.qwen36])
+    func nativeMaximumContextIsReachableForEveryFamily(
+        _ family: ModelFamily
+    ) throws {
+        let arguments = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--max-context", "262144",
+            "--prefill", "on",
+        ])
+        let configuration = try arguments.resolvedRuntimeConfiguration(family: family)
+        #expect(configuration.prefillPolicy == .chunked)
+        #expect(arguments.maxContext == 262_144)
+    }
+
+    /// The rejection message must quote the family's own KV cost, not a
+    /// Gemma-shaped number for every model.
+    @Test func unchunkedRejectionQuotesTheArchitecturesOwnFootprint() throws {
+        let arguments = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--max-context", "262144",
+            "--prefill", "off",
+        ])
+        do {
+            _ = try arguments.resolvedRuntimeConfiguration(family: .gemma4)
+            Issue.record("expected the Gemma configuration to be rejected")
+        } catch let ServerArgumentError.invalid(message) {
+            #expect(message.contains("55 GiB"))
+            #expect(message.contains("gemma4"))
+        }
+    }
+
     @Test(arguments: [
         ["--expert-cache-slots", "12"],
         ["--expert-cache-policy", "mru"],

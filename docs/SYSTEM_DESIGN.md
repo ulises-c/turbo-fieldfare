@@ -437,16 +437,38 @@ references lead to the supporting code and tests.
 
 ## Scope and limitations
 
-The current runtime supports text and image input with the pinned Gemma 4
-26B-A4B instruction checkpoint. Image support is optional. The vision tower
-and projector live in a separate companion pack, so an installation without
-that pack has the footprint it had before. The image tower requires M2 or
-newer; text-only inference remains available on M1. See [Images](#images).
+The runtime supports two pinned instruction checkpoints, Gemma 4 26B-A4B and
+Qwen 3.6 35B-A3B, selected from `manifest.json -> arch.family`. Manifests
+without that field are Gemma 4, so existing installations load as before.
+
+Image input is available for Gemma 4 only, and is itself optional: the vision
+tower and projector live in a separate companion pack, so an installation
+without that pack has the footprint it had before. The image tower requires M2
+or newer; text-only inference remains available on M1. Qwen 3.6 is text-only
+here — its source checkpoint has a vision tower, but no companion pack is built
+for it, and the image path is fail-closed for that family rather than falling
+back to Gemma's tower. See [Images](#images).
+
+Qwen 3.6 is a hybrid of 30 gated-DeltaNet linear-attention layers and 10 gated
+full-attention layers, with 256 routed experts per layer and a gated shared
+expert. It holds the same bounded-memory contract as Gemma 4 and in fact uses
+less: a measured 1,448 MiB peak process footprint at 4K context against Gemma's
+~2,126 MiB, because its experts are half the size and only a quarter of its
+layers keep a KV cache. That was verified with the working set constrained to
+about 8 GB. Its install needs about 19.6 GB of disk against Gemma's 14.3 GB.
+Those figures are upstream's, measured on an M5 24 GB host at 4K context; they
+are carried here as reported and have not been reproduced on this fork. See
+[Qwen 3.6 performance notes](QWEN36_PERFORMANCE.md) and
+[Benchmarks](BENCHMARKS.md#qwen-36-35b-a3b-measured-decode).
 
 The Mac app offers 4K, 8K, 16K, 32K, and 64K context lengths. Manual acceptance
-covers the Mac app at 8K and CLI stress at 64K. Audio input, video input,
-training, fine-tuning, server batching, remote serving, and general model
-support are outside the current scope. The optional HTTP server is loopback-only, owns one
+covers the Mac app at 8K and CLI stress at 64K for Gemma 4; published Qwen 3.6
+acceptance evidence covers 4K. Audio input, video input, training, fine-tuning,
+server batching, remote serving, and general model support are outside the
+current scope. The runtime supports the two architectures above by explicit
+enumeration — each with its own pinned checkpoint, compile-time baseline, and
+manifest contract — rather than by discovering arbitrary checkpoints. The
+optional HTTP server is loopback-only, owns one
 warm model, serializes generation, and retains one verified conversational KV
 prefix by default. It retains only that prefix. See the
 [local server guide](OPENAI_SERVER.md).

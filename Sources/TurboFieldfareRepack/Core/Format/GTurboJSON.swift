@@ -32,6 +32,11 @@ enum GTurboJSON {
                                       expertStride: UInt64,
                                       bitWidths: QuantBitWidths) throws -> Data {
         let arch = plan.arch
+        // Gemma 4 is the baseline family: its manifests predate the family
+        // discriminator and must keep encoding without any extension key.
+        // Every other family writes the full extension set.
+        let writesFamilyExtensions = arch.family != .gemma4
+        func ext<T>(_ value: T) -> T? { writesFamilyExtensions ? value : nil }
         let bitWidthsByQuantSlot = [
             "embedding": bitWidths.embedding,
             "attention": bitWidths.attention,
@@ -60,7 +65,24 @@ enum GTurboJSON {
             tieWordEmbeddings: arch.tieWordEmbeddings,
             attentionKEqV: arch.attentionKEqV,
             hiddenActivation: arch.hiddenActivation,
-            fullAttentionLayerMask: arch.fullAttentionLayerMask.map(Int.init))
+            fullAttentionLayerMask: arch.fullAttentionLayerMask.map(Int.init),
+            // Family extensions are written only for families that need them,
+            // so a Gemma manifest stays byte-identical to the pre-family
+            // format. `ext` collapses to nil for the baseline family, and
+            // JSONEncoder omits nil, so no key is emitted.
+            family: ext(arch.family.rawValue),
+            attnOutputGate: ext(arch.attnOutputGate),
+            attentionScale: ext(arch.attentionScale),
+            embeddingScaledBySqrtHidden: ext(arch.embeddingScaledBySqrtHidden),
+            routerScaled: ext(arch.routerScaled),
+            ffnSandwichNorms: ext(arch.ffnSandwichNorms),
+            sharedExpertGated: ext(arch.sharedExpertGated),
+            ropeNeoxSubdim: ext(arch.ropeNeoxSubdim),
+            linearNumKHeads: ext(arch.linearNumKHeads),
+            linearNumVHeads: ext(arch.linearNumVHeads),
+            linearKeyHeadDim: ext(arch.linearKeyHeadDim),
+            linearValueHeadDim: ext(arch.linearValueHeadDim),
+            linearConvKernelSize: ext(arch.linearConvKernelSize))
         func slot(_ name: String) throws -> GTurboManifestQuantSlotV1 {
             guard let weightBits = bitWidthsByQuantSlot[name] else {
                 throw RepackError.configurationInvalid(
