@@ -109,6 +109,108 @@ private actor EchoBackend: ServerInferenceBackend {
         try await server.shutdown()
     }
 
+    /// A Qwen 3.6 text model cannot be paired with Gemma's image tower — the
+    /// family guard in `ManifestReader.validateArch` refuses it — so
+    /// `ServerModelSession.makeSession` catches that failure, records
+    /// `visionCapability == "invalid"`, and serves text only.
+    ///
+    /// This is the wire behaviour that state must produce: an image request is
+    /// *rejected*, with `vision_unavailable` and a 400, and never answered as
+    /// though no image had been sent. The echo backend would happily answer
+    /// "ok" if the request reached it, so the absence of a completion is the
+    /// load-bearing half of this case.
+    @Test func qwenFamilyServerRefusesImagesInsteadOfAnsweringThemAsText() async throws {
+        let root = Self.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Exactly what `unavailableVisionCapability(for: ModelError.archMismatch)`
+        // returns when a Qwen text model is handed to `VisionRuntime.open`.
+        let server = TurboFieldfareHTTPServer(
+            modelID: "test-model", queueLimit: 1, backend: EchoBackend(),
+            visionCapability: "invalid", attachmentRoot: root)
+        let channel = try await server.start(port: 0)
+        let port = try #require(channel.localAddress?.port)
+        let socket = try connectedSocket(port: port)
+        defer { _ = Darwin.close(socket) }
+
+        try writeAll(socket: socket, text: httpRequest(
+            port: port, body: Self.imageBody(count: 1), connection: "close"))
+        let response = try readUntil(
+            socket: socket, timeoutMilliseconds: 4_000,
+            condition: { $0.contains("HTTP/1.1 4") })
+        #expect(response.contains("HTTP/1.1 400"),
+                "image rejection must be a 400-class client error: \(response.prefix(64))")
+        #expect(response.contains("vision_unavailable"))
+        // The request must not have been served. An answer here would mean the
+        // image was dropped and the text answered around it.
+        #expect(!response.contains("chat.completion"),
+                "an image request was answered as if no image had been sent")
+        #expect(!response.contains(#""content":"ok""#),
+                "the backend generated a completion for a rejected image request")
+        #expect(Self.stagedFileCount(root) == 0)
+        try await server.shutdown()
+    }
+
+    /// The same Qwen-family server still answers text. The rejection above has
+    /// to be about the image, not about the server refusing everything — a
+    /// server that 400s every request would pass that case for the wrong
+    /// reason.
+    @Test func qwenFamilyServerStillAnswersTextOnlyRequests() async throws {
+        let root = Self.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let server = TurboFieldfareHTTPServer(
+            modelID: "test-model", queueLimit: 1, backend: EchoBackend(),
+            visionCapability: "invalid", attachmentRoot: root)
+        let channel = try await server.start(port: 0)
+        let port = try #require(channel.localAddress?.port)
+        let socket = try connectedSocket(port: port)
+        defer { _ = Darwin.close(socket) }
+
+        let body = #"{"model":"test-model","messages":[{"role":"user","content":"hi"}]}"#
+        try writeAll(socket: socket, text: httpRequest(
+            port: port, body: body, connection: "close"))
+        let response = try readUntil(
+            socket: socket, timeoutMilliseconds: 4_000,
+            condition: { $0.contains("HTTP/1.1 ") })
+        #expect(response.contains("HTTP/1.1 200"), "\(response.prefix(64))")
+        #expect(response.contains(#""content":"ok""#))
+        try await server.shutdown()
+    }
+
+    /// The capability gate lives on the `data:image/` header the streaming
+    /// parser sniffs. A client that skips that header by naming an attachment
+    /// token directly — the internal form the parser rewrites accepted images
+    /// into — must not slip an image past a server that cannot serve one.
+    ///
+    /// The token names no lease this request staged, so the request is refused;
+    /// what matters is that it is refused rather than quietly answered without
+    /// its image.
+    @Test func forgedAttachmentTokensCannotSmuggleAnImagePastTheGate() async throws {
+        let root = Self.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let server = TurboFieldfareHTTPServer(
+            modelID: "test-model", queueLimit: 1, backend: EchoBackend(),
+            visionCapability: "invalid", attachmentRoot: root)
+        let channel = try await server.start(port: 0)
+        let port = try #require(channel.localAddress?.port)
+        let socket = try connectedSocket(port: port)
+        defer { _ = Darwin.close(socket) }
+
+        let body = #"{"model":"test-model","messages":[{"role":"user","content":"#
+            + #"[{"type":"image_url","image_url":{"url":"#
+            + #""turbofieldfare-attachment:00000000-0000-0000-0000-000000000000"}}]}]}"#
+        try writeAll(socket: socket, text: httpRequest(
+            port: port, body: body, connection: "close"))
+        let response = try readUntil(
+            socket: socket, timeoutMilliseconds: 4_000,
+            condition: { $0.contains("HTTP/1.1 ") })
+        #expect(response.contains("HTTP/1.1 4"),
+                "a forged attachment token was not rejected: \(response.prefix(64))")
+        #expect(!response.contains("chat.completion"),
+                "an image request was answered as if no image had been sent")
+        #expect(Self.stagedFileCount(root) == 0)
+        try await server.shutdown()
+    }
+
     /// Nothing may be written to disk for a request the router will not accept.
     /// Staging used to run before the method, path and content-type were even
     /// looked at, so `PUT /health` could fill the attachment directory.

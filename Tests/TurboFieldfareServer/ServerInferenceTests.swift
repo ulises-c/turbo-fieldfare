@@ -22,6 +22,28 @@ struct ServerVisionCapabilityTests {
         #expect(ServerModelSession.unavailableVisionCapability(
             for: VisionPackError.invalidMetadata("bad manifest")) == "invalid")
     }
+
+    /// The join between the family guard and the wire behaviour.
+    ///
+    /// A Qwen 3.6 text model handed to `VisionRuntime.open` fails
+    /// `ManifestReader.validateArch` with `ModelError.archMismatch(field:
+    /// "family", ...)`. `makeSession` catches it here and must classify it as a
+    /// capability the server does not have, so every later image request is
+    /// refused with `vision_unavailable` rather than answered text-only.
+    ///
+    /// "unsupported" would be wrong (the hardware is fine) but is still
+    /// fail-closed; anything that reads as *available* is the failure this
+    /// pins.
+    @Test func aQwenFamilyMismatchLeavesVisionUnavailable() {
+        let mismatch = ModelError.archMismatch(
+            field: "family", expected: "gemma4", actual: "qwen36")
+        let capability = ServerModelSession.unavailableVisionCapability(for: mismatch)
+        #expect(capability == "invalid")
+        // The ingress gate opens only on the exact string "ready"; a Qwen model
+        // must never produce it.
+        #expect(capability != "ready",
+                "a Qwen text model reported a working image tower")
+    }
 }
 
 /// How a request's images are read on the way into a prefill.
