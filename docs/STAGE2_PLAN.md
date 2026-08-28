@@ -48,10 +48,12 @@ Never carry over a reported percentage as an expected result.
    renamed to `TURBO_FIELDFARE_KERNEL_STATS=1`, off by default with only a
    disabled branch at instrumented command-buffer completion points. It breaks
    open the `unaccounted (GPU waits)` line that
-   `TURBO_FIELDFARE_PHASES=1` already prints.
-2. **Measure our own decode profile** on this host.
+   `TURBO_FIELDFARE_PHASES=1` already prints. — **done**, `a73c25b` + `f2a8e6c`.
+2. **Measure our own decode profile** on this host. — **done**, see Stage 2B
+   below. Expert I/O await is the flat ~40 % block; attention over KV is the
+   context-dependent one.
 3. **Choose optimizations from that evidence**, one lever per commit, each with a
-   matched-control A/B.
+   matched-control A/B. — in progress; first A/B (expert-cache slots) done.
 
 ## Stage 2A instrumentation contract
 
@@ -74,6 +76,76 @@ Two candidate picks flip runtime defaults — `069aed6` (expert slots 32→64 pl
 pinned resident weights; our default is 16) and `7cc8b5e` (rdadvise policy on;
 our default is `.off`). Per AGENTS.md these land as opt-in flags only, with any
 default-flip proposal deferred until we have our own measurements.
+
+## Stage 2B: our own decode profile
+
+M5 Max MacBook Pro, 36 GB, macOS 26.6.2, Swift 6.3.3, commit `f2a8e6c`, release
+build, Gemma 4 `scratch/gemma4.gturbo`. All three frozen `real-generation-v1`
+prompts, `--max-new 128 --max-context 4096 --temperature 0.2 --top-k 64
+--top-p 0.95 --seed 20260721`, defaults otherwise. Instrumentation on via
+`TURBO_FIELDFARE_KERNEL_STATS=1 TURBO_FIELDFARE_PHASES=1`.
+
+| prompt | prefill | decode | tok/s | expert io await | unaccounted | kernel total |
+|---|---|---|---|---|---|---|
+| short-explanation | 61tok/5.15s | 3.02s | 42.44 | 1222.8 ms | 1692.5 ms | 1382.1 ms |
+| medium-review | 430tok/6.31s | 3.18s | 40.30 | 1198.1 ms | 1872.5 ms | 1608.1 ms |
+| long-synthesis | 3015tok/16.12s | 3.35s | 38.17 | 1192.2 ms | 2059.6 ms | 1740.0 ms |
+
+Three repeats of short-explanation landed at 42.44 / 43.70 / 43.65 tok/s with
+byte-identical stdout, so run-to-run noise is well under the effects below.
+
+Reading it:
+
+1. **Expert I/O await is ~40 % of decode and flat across prompt lengths**
+   (1222/1198/1192 ms). It does not scale with context, so it is a per-token
+   fixed cost of pulling routed experts, not a context effect. This is the
+   largest single addressable block.
+2. **`unaccounted (GPU waits)` is the other ~55 %, and it is the part that
+   grows with context** (1692 → 2059 ms). The kernel report explains why:
+   `attention_router` alone goes 527 → 684 → 903 ms across the same prompts
+   while every other role stays flat. Attention over a longer KV is the
+   context-dependent term; the MoE roles are not.
+3. **Summed GPU spans (1382 ms) are well under decode wall time (3016 ms)** even
+   though the roles cover the whole forward pass — command buffers overlap, so
+   the gap is stall, not unmeasured compute. Consistent with I/O await being
+   real waiting rather than hidden GPU work.
+4. `embed` is 0.36 ms total over 128 tokens. Nothing to win there.
+
+So the two levers worth an A/B are the two blocks above: expert-cache residency
+(attacks block 1) and read-advice (also block 1, via the same await).
+
+## Stage 2B A/B: expert-cache slots
+
+First pass ran the arms back to back and every run beat the previous one
+regardless of arm — page-cache warming aliased perfectly onto run order. Redone
+with two warmup runs discarded and the arms interleaved A/B/A/B so order cannot
+alias the lever. Four pairs, short-explanation, all ten stdouts share one hash.
+
+| arm | tok/s (4 runs) | mean | expert io await | unaccounted |
+|---|---|---|---|---|
+| `--expert-cache-slots 16` (default) | 45.93 / 44.90 / 45.55 / 45.43 | **45.45** | 1078.7 ms | 1644.9 ms |
+| `--expert-cache-slots 32` | 48.20 / 46.80 / 46.38 / 48.17 | **47.39** | 866.0 ms | 1753.2 ms |
+
+**+1.93 tok/s, +4.3 %.** 32 slots wins all four adjacent pairs and the two
+distributions are disjoint (min B 46.38 > max A 45.93), so the effect clears the
+noise floor.
+
+The mechanism matches the profile rather than merely correlating with it: the
+gain is bought entirely in expert I/O await, −212.7 ms (−19.7 %), exactly the
+block the profile named. Note the partial refund — `unaccounted` rises +108.4 ms
+(+6.6 %) as decode stalls less on I/O and more on the GPU, so about half the I/O
+saving is given back and the headline is +4.3 % rather than the ~7 % the I/O
+delta alone would suggest.
+
+Read-advice (`--rdadvise adaptive` / `bounded`) cut I/O await similarly but
+returned it all to `unaccounted`, netting no throughput change. It was measured
+only in the order-confounded first pass, so it is recorded as "no effect
+observed", not as a settled negative.
+
+Per AGENTS.md this is a measurement, not a default change: 16 slots remains the
+default and `--expert-cache-slots 32` remains opt-in. A default-flip proposal
+needs the other two prompts, a memory-headroom check at 32 slots, and the same
+interleaved treatment before it is worth writing.
 
 ## Reusable rig
 
