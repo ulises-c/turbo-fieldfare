@@ -273,6 +273,12 @@ public func run(args: Args,
             lines += String(format: "%.1f", total - accounted) + " ms\n"
             stderr.write(Data(lines.utf8))
         }
+        let kernelReport = kernelGPUStatsReportIfEnabled(
+            summary: runner.kernelGPUTimingSummary(),
+            tokenCount: stats.newTokens)
+        if !kernelReport.isEmpty {
+            stderr.write(Data(("\n" + kernelReport).utf8))
+        }
         if !args.quiet {
             let tokensPerSecond = stats.decodeSeconds > 0
                 ? Double(stats.newTokens) / stats.decodeSeconds
@@ -293,6 +299,45 @@ public func run(args: Args,
     } catch {
         return errored(stderr, "\(error)", 1)
     }
+}
+
+func kernelGPUStatsReport(summary: [KernelGPUTimingSummary], tokenCount: Int) -> String {
+    let locale = Locale(identifier: "en_US_POSIX")
+    func milliseconds(_ value: Double) -> String {
+        String(format: "%.3f", locale: locale, value)
+    }
+    let ordered = summary.sorted { $0.role < $1.role }
+    let capturedDecodeTokens = ordered.reduce(0) { count, row in
+        switch row.role {
+        case "fused_head", "logits_head":
+            count + row.count
+        default:
+            count
+        }
+    }
+    let perTokenDivisor = capturedDecodeTokens > 0
+        ? Double(capturedDecodeTokens)
+        : (tokenCount > 0 ? Double(tokenCount) : 0)
+    var lines = ordered.map { row in
+        let perToken = perTokenDivisor > 0 ? row.gpuMilliseconds / perTokenDivisor : 0
+        return "[kernel role=\(row.role) gpu_ms=\(milliseconds(row.gpuMilliseconds)) "
+            + "per_token_ms=\(milliseconds(perToken)) count=\(row.count)]"
+    }
+    let totalMilliseconds = ordered.reduce(0) { $0 + $1.gpuMilliseconds }
+    let totalCount = ordered.reduce(0) { $0 + $1.count }
+    let totalPerToken = perTokenDivisor > 0 ? totalMilliseconds / perTokenDivisor : 0
+    lines.append("[kernel role=total gpu_ms=\(milliseconds(totalMilliseconds)) "
+                 + "per_token_ms=\(milliseconds(totalPerToken)) count=\(totalCount)]")
+    return lines.joined(separator: "\n") + "\n"
+}
+
+func kernelGPUStatsReportIfEnabled(
+    summary: [KernelGPUTimingSummary],
+    tokenCount: Int,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> String {
+    guard KernelGPUStats.isEnabled(environment: environment) else { return "" }
+    return kernelGPUStatsReport(summary: summary, tokenCount: tokenCount)
 }
 
 
