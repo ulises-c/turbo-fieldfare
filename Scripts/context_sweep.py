@@ -42,15 +42,41 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# (context cap, filler words) -- filler chosen so the prompt lands on the same
-# token count the memory ladder recorded for that rung.
-RUNGS: dict[int, int] = {
-    65_536: 57_000,
-    98_304: 89_800,
-    131_072: 122_500,
-    196_608: 187_800,
-    262_144: 253_100,
+# (context cap -> filler words), per model family. Filler is chosen so the
+# prompt lands on the same server-reported token count for every family, so a
+# Qwen rung is comparable token-for-token with the Gemma rung beside it. Both
+# tokenizers emit exactly 1.0 tokens per "word " (measured); the families differ
+# only in the fixed template+needle overhead -- Gemma 43 tokens, Qwen 42 -- so
+# the Qwen filler counts are one word higher to hit the identical target.
+RUNGS_BY_STEM: dict[str, dict[int, int]] = {
+    "gemma4": {
+        65_536: 57_000,
+        98_304: 89_800,
+        131_072: 122_500,
+        196_608: 187_800,
+        262_144: 253_100,
+    },
+    "qwen36": {
+        65_536: 57_001,
+        98_304: 89_801,
+        131_072: 122_501,
+        196_608: 187_801,
+        262_144: 253_101,
+    },
 }
+# Backwards-compatible default for callers/tests that import RUNGS directly.
+RUNGS: dict[int, int] = RUNGS_BY_STEM["gemma4"]
+
+
+def rungs_for(model: Path) -> dict[int, int]:
+    """Filler map for the pack's family, keyed by the .gturbo stem.
+
+    Falls back to the Gemma map for an unrecognized stem: the slope is 1.0 for
+    both known families, so the target is only off by the +/-1 token overhead
+    difference, and server-reported prompt_tokens stays authoritative either way.
+    """
+    stem = model.name.replace(".gturbo", "")
+    return RUNGS_BY_STEM.get(stem, RUNGS_BY_STEM["gemma4"])
 
 
 def run_rung(context: int, filler: int, depths: str, out: Path,
@@ -109,13 +135,14 @@ def main(argv: list[str] | None = None) -> int:
     if not options.model.exists():
         parser.error(f"no model pack at {options.model}")
 
+    rungs = rungs_for(options.model)
     if options.rungs:
         wanted = [int(part) for part in options.rungs.split(",") if part.strip()]
-        unknown = [rung for rung in wanted if rung not in RUNGS]
+        unknown = [rung for rung in wanted if rung not in rungs]
         if unknown:
-            parser.error(f"unknown rungs {unknown}; known: {sorted(RUNGS)}")
+            parser.error(f"unknown rungs {unknown}; known: {sorted(rungs)}")
     else:
-        wanted = sorted(RUNGS)
+        wanted = sorted(rungs)
 
     options.out.mkdir(parents=True, exist_ok=True)
     # Per-model file: a Gemma sweep and a Qwen sweep must never land in one
@@ -129,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
 
     everything: list[dict] = []
     for context in wanted:
-        _, records = run_rung(context, RUNGS[context], options.depths,
+        _, records = run_rung(context, rungs[context], options.depths,
                               options.out, jsonl, options.model)
         everything.extend(records)
 
