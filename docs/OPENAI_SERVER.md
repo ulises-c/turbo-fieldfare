@@ -112,7 +112,7 @@ OpenCode:
             "output": ["text"]
           },
           "limit": {
-            "context": 16384,
+            "context": 32768,
             "output": 4096
           }
         }
@@ -150,7 +150,7 @@ Pi uses its `openai-completions` adapter:
         "name": "Gemma 4 26B-A4B IT",
         "reasoning": false,
         "input": ["text", "image"],
-        "contextWindow": 16384,
+        "contextWindow": 32768,
         "maxTokens": 4096
       }]
     }
@@ -226,9 +226,57 @@ The server supports one model and one choice. It does not support the Responses
 API, legacy Completions, embeddings, structured output,
 batching, log probabilities, or remote model switching.
 
-Context length can be 4K, 8K, 16K, 32K, or 64K. The default is 16K. Larger FP16
-KV contexts use more memory. On an 8 GB Mac, run one model process at a time and
-watch memory pressure.
+For long-context diagnostics, the server completion log also reports the measured
+execution stages: `pp` is prompt prefill time, `pp_tok_s` is computed prompt
+throughput excluding cached tokens, `tg` is token-generation time, and
+`tg_tok_s` is generated-token throughput. These exclude time spent queued or
+preparing the request; the `completed in` value is the end-to-end server request
+duration.
+
+Context length can be 4K, 8K, 16K, 32K, 64K, 96K, 128K, 192K, or 256K. The
+default is 16K. Both supported families — Gemma 4 26B-A4B and Qwen 3.6
+35B-A3B — are natively 262,144, so 256K is the model's own maximum rather than
+an extrapolation. Larger FP16 KV contexts use more memory. On an 8 GB Mac, run
+one model process at a time and watch memory pressure.
+
+KV is allocated at the **context cap, not the prompt length**: a server started
+with `--max-context 262144` reaches its full KV footprint even for a 14-token
+prompt. `--max-context` is therefore the memory dial. See
+[Memory expectations](MEMORY_EXPECTATIONS.md) for the measured per-device
+table and `Scripts/memory_matrix.py` to generate it.
+
+Above 64K Gemma 4 requires `--prefill on`, which is the default. Chunked
+prefill enables the FP16 sliding-window ring, and that ring is what makes a
+long context affordable for Gemma: it holds `slidingWindow +
+prefill-chunk-tokens` per sliding-window layer instead of the full context.
+With `--prefill off` every layer allocates KV at the full context, which needs
+roughly 55 GiB at 256K, so the combination is rejected during argument parsing
+rather than at model load.
+
+That bound is a KV budget evaluated against the installed model's
+architecture, not a fixed context limit. Qwen 3.6 has no sliding-window layers
+— its 30 gated-DeltaNet layers hold a fixed recurrent state instead of
+per-token K/V rows — so the ring is a no-op for it and `--prefill off` stays
+available at every context. The server reads the family from the manifest
+before it validates, and falls back to Gemma's stricter bound when it cannot.
+
+Long contexts are admitted, but they are not cheap and they are not free of
+caveats:
+
+- Prefill dominates. On an M5 Max, one 253,952-token prompt took about 32
+  minutes of prefill; the same machine prefilled 57,344 tokens in about 4
+  minutes. Per-token cost rises with length rather than staying flat.
+- The capability check is a supported-value list, not a model probe. The server
+  validates the requested cap against its allowlist; it does not interrogate the
+  weights for a usable positional range.
+- Admission is not comprehension. The recorded ladder measures that a prompt is
+  accepted, prefilled, and memory stable. Whether the model still retrieves from
+  the far end of a long prompt is measured separately by
+  `Scripts/context_retrieval.py`.
+
+Pick the smallest cap that fits the workload. The client examples above use 32K
+because agent clients size their own history to the advertised window, and
+advertising 256K commits every request to the prefill cost above.
 
 For long requests, stderr reports the request lifecycle as prepared, queued,
 generating, completed, or failed. It includes token counts and timing, but not

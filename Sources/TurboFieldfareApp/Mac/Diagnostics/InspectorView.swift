@@ -1,4 +1,5 @@
 import AppKit
+import TurboFieldfare
 import TurboFieldfareAppCore
 import TurboFieldfareMacPresentation
 import SwiftUI
@@ -202,8 +203,31 @@ struct InspectorView: View {
         }
     }
 
+    private var modelFamilyBinding: Binding<ModelFamily> {
+        Binding {
+            model.selectedModelFamily
+        } set: { family in
+            model.selectModelFamily(family)
+        }
+    }
+
     private var modelSection: some View {
         Section("Model") {
+            LabeledContent("Model") {
+                Picker("Model", selection: modelFamilyBinding) {
+                    ForEach(AppModelInstallDescriptor.selectableFamilies, id: \.self) { family in
+                        Text(AppModelInstallDescriptor.descriptor(for: family)?.displayName
+                            ?? family.rawValue)
+                            .tag(family)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+            }
+            Text("Switching models unloads the current one and points the app at that model's pack. Each is downloaded separately.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             LabeledContent("Path") {
                 HStack(spacing: 6) {
                     Text(model.modelPathText)

@@ -121,9 +121,15 @@ public func run(args: Args,
             }
         }
         let args = effectiveArgs
+        // Read the family from the manifest so the context bound matches the
+        // model actually being loaded; an unreadable directory falls back to
+        // Gemma 4, the stricter bound.
+        let family = (try? ManifestReader.peekFamily(
+            directoryURL: URL(fileURLWithPath: args.model).standardizedFileURL)) ?? .gemma4
         let runtime = try args.resolvedRuntimeConfiguration(
             forceLogitsHead: !makeConfig(maxNewTokens: args.maxNew).isPureGreedy,
-            imagePrompt: input.hasImages)
+            imagePrompt: input.hasImages,
+            family: family)
 
         if !args.quiet,
            let notice = prefillCoercionNotice(

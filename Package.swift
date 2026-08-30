@@ -144,7 +144,13 @@ let package = Package(
         ),
         .testTarget(
             name: "TurboFieldfareRepackTests",
-            dependencies: ["TurboFieldfareFormat", "TurboFieldfareRepackCore"],
+            dependencies: [
+                "TurboFieldfareFormat",
+                "TurboFieldfareRepackCore",
+                // LayoutBoundParityTests asserts the installer's layout bound
+                // equals the runtime's, so it needs the runtime module.
+                "TurboFieldfare",
+            ],
             path: "Tests/TurboFieldfareRepack/Core"
         ),
         .testTarget(
@@ -167,6 +173,9 @@ let package = Package(
             name: "TurboFieldfareServerTests",
             dependencies: [
                 "TurboFieldfareServerCore",
+                // The context-admission parity tests assert the CLI and the
+                // server accept exactly the same contexts, so they need both.
+                "TurboFieldfareCLICore",
                 .product(name: "NIOEmbedded", package: "swift-nio"),
             ],
             path: "Tests/TurboFieldfareServer",
