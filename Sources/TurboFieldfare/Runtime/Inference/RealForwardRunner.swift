@@ -251,12 +251,15 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private var rdadviseAdaptiveState: RDAdviceAdaptivePolicyState
     private var rdadviseAdaptivePosition: Int = -1
     private var rdadviseAdaptivePositionBytes: UInt64 = 0
+    private let kernelGPUTimingsEnabled: Bool
+    private var kernelGPUTimingAccumulator = KernelGPUTimingAccumulator()
     public init(model: Model, context: MetalContext, maxContext: Int,
                 runtimeConfiguration: RuntimeConfiguration = .production) throws {
         self.model = model
         self.ctx = context
         self.cfg = model.config
         self.maxContext = maxContext
+        self.kernelGPUTimingsEnabled = KernelGPUStats.isEnabled()
         self.useFusedGreedyHead = runtimeConfiguration.headPath == .fusedRows
         self.prefillAttentionPath = runtimeConfiguration.prefillAttentionPath
         let useFP16Ring = runtimeConfiguration.fp16RingEnabled
@@ -492,6 +495,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     public func reset() {
         kv?.reset()
         gdnState?.reset()
+        kernelGPUTimingAccumulator.reset()
         resetTransientState()
     }
 
@@ -508,6 +512,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             throw PrefillError.prefillCursorMismatch(
                 "continuation expected KV position \(expectedPosition), current \(kv.position)")
         }
+        kernelGPUTimingAccumulator.reset()
         resetTransientState()
     }
 
@@ -531,6 +536,22 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     public private(set) var totalRDAdviseBytes: UInt64 = 0
     public private(set) var totalRDAdviseFailures: UInt64 = 0
     public private(set) var totalRDAdviseSkipped: UInt64 = 0
+
+    func recordKernelGPUTiming(role: String, start: TimeInterval, end: TimeInterval) {
+        guard kernelGPUTimingsEnabled else { return }
+        kernelGPUTimingAccumulator.record(role: role, start: start, end: end)
+    }
+
+    private func recordKernelGPU(role: String, commandBuffer: MTLCommandBuffer) {
+        guard kernelGPUTimingsEnabled else { return }
+        kernelGPUTimingAccumulator.record(role: role,
+                                          start: commandBuffer.gpuStartTime,
+                                          end: commandBuffer.gpuEndTime)
+    }
+
+    public func kernelGPUTimingSummary() -> [KernelGPUTimingSummary] {
+        kernelGPUTimingAccumulator.summary()
+    }
 
     private func recordRDAdvice(_ result: ExpertIOAdviceResult, wallNanos: UInt64) {
         totalRDAdviseNanos &+= wallNanos
@@ -1769,6 +1790,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 try checkCommandBufferError(phase1HitCB)
             }
             try checkCommandBufferError(pending.cb)
+            if let sharedCB = pending.sharedCB {
+                recordKernelGPU(role: "shared_expert", commandBuffer: sharedCB)
+            }
+            if let phase1HitCB = pending.phase1HitCB {
+                recordKernelGPU(role: "moe_phase1_hit", commandBuffer: phase1HitCB)
+            }
+            recordKernelGPU(role: "routed_moe", commandBuffer: pending.cb)
             totalCb2Nanos &+= pending.encodeAndCommitNanos
         }
 
@@ -1780,7 +1808,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         // Embed lookup + sqrt(H) fused.
         let emb = model.embedding
         do {
-            try runSync { cb in
+            let embedCB = try runSync { cb in
                 embedInt4.encode(commandBuffer: cb,
                                  table:  emb.buffer, tableOffset:  Int(emb.offset),
                                  scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
@@ -1790,6 +1818,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                  d: D,
                                  outScale: embedOutScale)
             }
+            recordKernelGPU(role: "embed", commandBuffer: embedCB)
         }
 
         for L in 0..<cfg.numLayers {
@@ -1976,6 +2005,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 pendingRoutedCommand = nil
             }
             try checkCommandBufferError(cb)
+            recordKernelGPU(role: "attention_router", commandBuffer: cb)
             totalCb1Nanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tCb1Start - waitNanos
 
             // CPU readback to fetch routed-expert blobs from disk.
@@ -2257,14 +2287,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             let useFusedHeadForThisToken = useFusedGreedyHead && outputMode == .greedyIfAvailable
             let tHead = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
             if useFusedHeadForThisToken {
-                try runSync(gFusionHead)
+                let headCB = try runSync(gFusionHead)
+                recordKernelGPU(role: "fused_head", commandBuffer: headCB)
                 totalHeadFusedNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tHead
                 lastGreedyToken = greedyTokenBuf.contents().load(as: UInt32.self)
             } else {
-                try runSync { cb in
+                let headCB = try runSync { cb in
                     gFinalNorm(cb)
                     gLmHead(cb)
                 }
+                recordKernelGPU(role: "logits_head", commandBuffer: headCB)
                 totalHeadNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tHead
             }
         }
@@ -2435,11 +2467,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     x: attnOut, y: oOut, m: D, n: qDim)
     }
 
-    private func runSync(_ body: (MTLCommandBuffer) -> Void) throws {
+    @discardableResult
+    private func runSync(_ body: (MTLCommandBuffer) -> Void) throws -> MTLCommandBuffer {
         let cb = ctx.queue.makeCommandBuffer()!
         body(cb)
         cb.commit()
         try waitForCompletion(cb)
+        return cb
     }
 
     private nonisolated func waitForCompletion(_ cb: MTLCommandBuffer) throws {
