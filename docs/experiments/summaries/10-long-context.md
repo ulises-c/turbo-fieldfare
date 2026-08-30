@@ -14,8 +14,9 @@ reported separately here.
 | --- | --- |
 | 256K admission, prefill, and memory stability | Measured on M5 Max; see caveats below |
 | `--prefill off` above 64K | Rejected during argument parsing |
-| Long-context retrieval at ladder rungs | **Not yet measured** |
-| Multi-token decode throughput at long context | Not measured; ladder uses a one-token completion |
+| Long-context retrieval at ladder rungs | **15/15 recall, 57K–253K, all depths** |
+| Prefill timing on the current build | Re-measured, matched, one binary |
+| Multi-token decode throughput at long context | Not measured; probes use a short completion |
 
 ## Why the sliding window makes this two questions
 
@@ -69,14 +70,15 @@ attention pipeline selection and the prefill command-buffer structure, which is
 exactly the path the timing columns measure.
 
 **The timing columns above therefore describe a superseded prefill
-implementation and must be re-measured before they are quoted as current.** The
-memory columns are structural — they follow from KV allocation, not from
-scheduling — and are expected to hold; see the check below. The rungs were also
-run across more than one commit, with the 64K baseline recorded last, so they
-are not a matched set even among themselves.
+implementation.** They are retained as a dated lab record only. The memory
+columns are structural — they follow from KV allocation, not from scheduling —
+and are expected to hold; see the check below. The rungs were also run across
+more than one commit, with the 64K baseline recorded last, so they are not a
+matched set even among themselves.
 
-Re-running the full ladder on a single binary is tracked as blocking question 1
-in the pull request.
+**Superseded.** "Prefill timing, re-measured" below carries a matched
+single-binary replacement, three probes per rung. Quote that table, not this
+one.
 
 ### Memory model cross-check
 
@@ -114,23 +116,71 @@ window, while one in the middle must survive on the full-attention layers.
 
 ### Recorded run
 
-Same machine and build as above.
+Same machine as above, single binary at commit `b45ee76`.
 
 | Context cap | Actual prompt | Depths | Recall |
 |---:|---:|---|---|
 | 4K | 1,543 | 0.1 / 0.5 / 0.9 | 3/3 |
 | 16K | 14,043 | 0.1 / 0.5 / 0.9 | 3/3 |
-| 64K and above | — | — | **not measured** |
+| 64K | 57,043 | 0.1 / 0.5 / 0.9 | 3/3 |
+| 96K | 89,843 | 0.1 / 0.5 / 0.9 | 3/3 |
+| 128K | 122,543 | 0.1 / 0.5 / 0.9 | 3/3 |
+| 192K | 187,843 | 0.1 / 0.5 / 0.9 | 3/3 |
+| 256K | 253,143 | 0.1 / 0.5 / 0.9 | 3/3 |
 
-14,043 tokens already exceeds the 1024-token sliding window by more than 13x,
-so the full-attention path demonstrably carries information well past the local
-window. That is what makes the harness trustworthy at larger sizes; it is not
-evidence about those larger sizes.
+**15/15 across the ladder, no misses.** Depth 0.5 is the load-bearing case:
+at 253,143 tokens the needle sits roughly 126,000 tokens from either end, far
+outside the 1,024-token window of all 25 sliding-window layers, so it is
+reachable only through the 5 full-attention layers. It was recovered verbatim
+at every rung. Extending the cap therefore extends what the model can
+actually retrieve, not merely what it will accept.
 
-**No retrieval measurement exists for 57K through 254K — the exact range the
-256K cap adds.** Until it does, the supported claim is that long prompts are
-admitted and memory stable, not that they are usable. Tracked as blocking
-question 2 in the pull request.
+Every probe reported `cached_tokens: 0`, so no prefix cache shortened a
+prefill and each result is an independent measurement.
+
+**Scope.** Filler is repetitive by construction, which is the easy case for
+retrieval: a single distinctive sentence in a field of identical words. Real
+agent history is far more confusable. Read this as an upper bound on
+long-context recall, and as strong evidence against catastrophic
+sliding-window failure — not as a guarantee for arbitrary content.
+
+## Prefill timing, re-measured
+
+The timing table earlier in this document predates the merge of #159 and was
+recorded across several commits. The retrieval sweep re-measures it as a
+by-product: every probe records `pp_seconds` and `pp_tokens_per_second`, all
+on one binary in one sitting, three probes per rung.
+
+| Context cap | Prompt | Pre-#159 tok/s | Measured tok/s (median of 3) | Delta |
+|---:|---:|---:|---:|---:|
+| 64K | 57,043 | 242.98 | 214.78 | −11.6% |
+| 96K | 89,843 | 194.23 | 185.25 | −4.6% |
+| 128K | 122,543 | 175.36 | 163.94 | −6.5% |
+| 192K | 187,843 | 145.96 | 136.89 | −6.2% |
+| 256K | 253,143 | 132.28 | 118.88 | −10.1% |
+
+Median delta −6.5%, mean −7.8%, same sign at every rung. Medians are quoted
+because 128K depth 0.5 returned a single 128.2 tok/s outlier against 165.6 and
+163.9 at the other two depths; the other four rungs vary by 1.6 to 3.2 tok/s
+across depths, so that one point is a transient rather than depth sensitivity.
+
+**This is not a like-for-like regression measurement.** The comparison is
+against numbers recorded on a different, superseded build across several
+commits, with the 64K baseline taken last — so the old column is not an
+internally matched set either. #159 targeted pre-Apple10 Macs, and this host
+is an M5 Max, so no speedup was expected here; whether these few percent are
+the cost of that fix, run-to-run variance, or thermal state is unresolved.
+Settling it needs an A/B against the pre-#159 commit on this machine, which
+has not been run.
+
+What the new column *is* good for: it is a matched, single-binary,
+three-probe-per-rung baseline. Future changes should be compared against it,
+not against the pre-#159 numbers.
+
+The shape of the curve is unchanged and is the practically important part.
+Time per prompt token rises from 4.60 ms at 64K to 8.46 ms at 256K, so a full
+256K prefill costs about 35 minutes on this host. **Memory is not the limit at
+long context on either of the tested devices; prefill time is.**
 
 ## Reproducing
 
@@ -144,6 +194,11 @@ python3 Scripts/context_ladder.py --model scratch/gemma4.gturbo --levels 256
 # Retrieval at a given cap.
 python3 Scripts/context_retrieval.py --model scratch/gemma4.gturbo \
   --max-context 262144 --filler-words 250000 --depths 0.1,0.5,0.9
+
+# Recall AND matched prefill timing across the whole ladder, one binary,
+# one server per rung. This is what produced the two tables above.
+python3 Scripts/context_sweep.py
+python3 Scripts/context_sweep.py --rungs 65536,98304
 ```
 
 Both harnesses write JSON under `benchmark-results/`, which is ignored by git;
