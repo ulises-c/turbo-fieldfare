@@ -1,3 +1,4 @@
+import TurboFieldfare
 import TurboFieldfareAppCore
 import TurboFieldfareMacPresentation
 import SwiftUI
@@ -46,6 +47,29 @@ struct ModelInstallView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            // The choice belongs on the screen where the download is decided.
+            // In the Model menu alone it is invisible at the one moment it
+            // matters: before committing to a 14.6 GB or 19.5 GB transfer.
+            Picker("Model", selection: modelFamilyBinding) {
+                ForEach(AppModel.selectableModelFamilies, id: \.self) { family in
+                    Text(AppModelInstallDescriptor.descriptor(for: family)?
+                        .displayName ?? family.rawValue)
+                        .tag(family)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(!model.canSelectModelFamily)
+            .frame(maxWidth: 420)
+            .accessibilityLabel("Model to install")
+        }
+    }
+
+    private var modelFamilyBinding: Binding<ModelFamily> {
+        Binding {
+            model.selectedModelFamily
+        } set: { family in
+            model.selectModelFamily(family)
         }
     }
 

@@ -86,9 +86,34 @@ public struct AppModelInstallDescriptor: Equatable, Sendable {
         }
     }
 
+    /// The family this descriptor installs. Lets a caller map a descriptor
+    /// back to a family without comparing whole values.
+    public var family: ModelFamily {
+        self == .qwen36 ? .qwen36 : .gemma4
+    }
+
     /// Basename of the installed `.gturbo` directory for this descriptor.
     public var installDirectoryName: String {
         self == .qwen36 ? "qwen36.gturbo" : "gemma4.gturbo"
+    }
+
+    /// Families the app can offer, in menu order. Declared on the descriptor
+    /// rather than on `AppModel` so it is reachable without main-actor
+    /// isolation -- it is a constant list, not UI state.
+    public static let selectableFamilies: [ModelFamily] = [.gemma4, .qwen36]
+
+    /// Key and suite the selection is persisted under. `selected` reads these;
+    /// `persistSelection` writes them.
+    public static let selectionDefaultsSuite = "TurboFieldfare"
+    public static let selectionDefaultsKey = "model"
+
+    /// Persist a model choice so the next launch selects it too.
+    ///
+    /// The environment variable still wins on read, so a launch with
+    /// `TURBO_FIELDFARE_MODEL` set is not silently overridden by a click.
+    public static func persistSelection(_ family: ModelFamily) {
+        UserDefaults(suiteName: selectionDefaultsSuite)?
+            .set(family.rawValue, forKey: selectionDefaultsKey)
     }
 
     /// The descriptor the app products select at launch. Defaults to Gemma 4.
@@ -97,8 +122,8 @@ public struct AppModelInstallDescriptor: Equatable, Sendable {
     /// applies, so GUI launches without an environment also select Qwen.
     public static var selected: AppModelInstallDescriptor {
         let environmentValue = ProcessInfo.processInfo.environment["TURBO_FIELDFARE_MODEL"]
-        let preferenceValue = UserDefaults(suiteName: "TurboFieldfare")?
-            .string(forKey: "model")
+        let preferenceValue = UserDefaults(suiteName: selectionDefaultsSuite)?
+            .string(forKey: selectionDefaultsKey)
         switch environmentValue ?? preferenceValue {
         case "qwen36": return .qwen36
         default: return .default
