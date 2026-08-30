@@ -182,6 +182,56 @@ Time per prompt token rises from 4.60 ms at 64K to 8.46 ms at 256K, so a full
 256K prefill costs about 35 minutes on this host. **Memory is not the limit at
 long context on either of the tested devices; prefill time is.**
 
+## Agentic growth is not cheaper than one cold prefill
+
+The ladder above prefills each rung cold. A real agentic session instead
+*grows* context in small steps, reusing the KV cache across turns, and it is
+reasonable to hope the incremental path is cheaper. `context_session.py` tests
+that directly: it grows a Qwen 3.6 35B-A3B session in ~16K-token steps to a
+262,144-token cap, replaying each turn's answer so the server cache keys on it,
+and plants a needle on turn 1 that it re-asks at 64K/96K/128K/192K checkpoints.
+
+**The KV cache works perfectly and buys nothing on total cost.** Each turn
+prefills only its ~16.4K new tokens (`server_cached_tokens` confirms the prior
+context is reused, not re-prefilled). But the *same* 16.4K delta gets steadily
+more expensive with depth, because attention is causal: each new token attends
+to every prior key, so per-new-token cost scales with how deep the session
+already is.
+
+| Session depth | Prefill of the ~16.4K new tokens | Cost per new token |
+|---:|---:|---:|
+| 33K | 223 s | 13.6 ms |
+| 131K | 866 s | 52.8 ms |
+| 246K | 1,746 s | 106.4 ms |
+
+The delta is constant; the cost of that delta grows ~8× across the span. Summed
+over the 15 landed turns, reaching 246K in steps cost **4.03 h of prefill —
+essentially identical to prefilling 256K cold.** Splitting the prefill into
+turns does not reduce the O(n²) attention work; it only *amortizes* it, so the
+user gets a response every turn instead of one long wall. What incremental
+context actually buys is interactivity, not throughput — and even that degrades
+at depth: TTFT is ~14 min at 131K and ~29 min at 246K. Caching pays off when a
+deep context is *reused* across many queries (build once, query cheap), not
+when *growing* to depth.
+
+Recall held the whole way: **needle HIT at 64K, 96K, 128K, and 192K (4/4)**,
+with memory dead-flat (61–63% free, ~5.2 GB Metal) from turn 1 — the server
+pre-allocates the full `--max-context` KV ring up front, so the agentic path
+has the same memory profile as the cold ladder, known on turn 1.
+
+### A known gap and a fixed bug
+
+The 256K *agentic* checkpoint is missing: the run stopped at turn 15 (246K)
+when turn 16's step projected 262,568 tokens, 424 over the `--max-context`
+262,144 cap, and the server correctly returned HTTP 400. That was a harness
+off-by-one — `approx_depth` counts real tokens but the step is a filler *word*
+count, and `filler_block` plus the chat template emit more tokens than words —
+now fixed by clamping the final step in token-space with margin for the answer
+budget. **256K capability itself is not in question:** the cold ladder admits
+and needle-recalls 256K, and the agentic path recalled cleanly at every rung it
+reached. Re-running for the single 256K agentic datapoint would cost another
+~4 h for no new conclusion, so it is deferred.
+
 ## Reproducing
 
 ```bash
@@ -199,6 +249,12 @@ python3 Scripts/context_retrieval.py --model scratch/gemma4.gturbo \
 # one server per rung. This is what produced the two tables above.
 python3 Scripts/context_sweep.py
 python3 Scripts/context_sweep.py --rungs 65536,98304
+
+# Agentic growth: grow context in ~16K steps to a cap, reusing the KV cache,
+# checking needle recall at each checkpoint. Produced the incremental table.
+python3 Scripts/context_session.py --model scratch/qwen36.gturbo \
+  --max-context 262144 --step-tokens 16384 --target 262144 \
+  --checkpoints 65536,98304,131072,196608,262144
 ```
 
 Both harnesses write JSON under `benchmark-results/`, which is ignored by git;
