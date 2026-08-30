@@ -147,6 +147,71 @@ default and `--expert-cache-slots 32` remains opt-in. A default-flip proposal
 needs the other two prompts, a memory-headroom check at 32 slots, and the same
 interleaved treatment before it is worth writing.
 
+## Stage 2C: the Qwen 3.6 family
+
+Qwen 3.6 35B-A3B is now installed (`scratch/qwen36.gturbo`), so the family caveat
+below is closed. The instrument, the profile, and the slot A/B were all reproduced
+on Qwen with the same rig and treatment as Gemma. Scripts:
+`Scripts/stage2_qwen_profile.sh`, `Scripts/stage2_qwen_ab.sh`,
+`Scripts/stage2_qwen_rss.sh`. Raw numbers in
+`docs/experiments/data/stage2c-qwen36-decode.jsonl`.
+
+### Baseline decode profile
+
+M5 Max, 36 GB, release build, `--max-new 128 --max-context 4096 --temperature 0.2
+--top-k 64 --top-p 0.95`, one warmup discarded per case, instrumentation on.
+
+| prompt | prefill | decode | tok/s | expert io await | unaccounted | attn_router | kernel total |
+|---|---|---|---|---|---|---|---|
+| short-explanation | 62tok/21.75s | 9.02s | 14.19 | 3130.4 ms | 5408.2 ms | 2665.1 ms | 4617.7 ms |
+| medium-review | 426tok/24.87s | 8.54s | 14.99 | 2923.1 ms | 5142.5 ms | 2527.5 ms | 4306.7 ms |
+| long-synthesis | 2940tok/50.30s | 8.73s | 14.67 | 3239.6 ms | 5003.4 ms | 2566.0 ms | 4068.2 ms |
+
+Qwen decodes at ~14–15 tok/s here, roughly a third of Gemma's ~40, and the shape
+differs: **expert I/O await is a much larger block (2.9–3.2 s vs Gemma's ~1.2 s)**
+and, like Gemma, it is flat across prompt length — a per-token fixed cost of
+pulling routed experts, not a context effect. `attention_router` is also flat
+(2.5–2.7 ms-scale), but note these runs cap context at 4096, so the KV-growth term
+Gemma showed is not exercised here. The larger await block is the reason to expect
+the slot lever to matter *more* on Qwen than on Gemma.
+
+### Stage 2C A/B: expert-cache slots (Qwen)
+
+Same treatment as the Gemma A/B: two warmups discarded, arms interleaved
+A/B/A/B, four pairs, short-explanation. All eight measured stdouts share one hash
+(`9edfd32d64764e62`), so output is byte-identical across the lever.
+
+| arm | tok/s (4 runs) | mean | expert io await | unaccounted | peak RSS |
+|---|---|---|---|---|---|
+| `--expert-cache-slots 16` (default) | 13.78 / 13.82 / 14.18 / 15.61 | **14.35** | 3231.6 ms | 5235.6 ms | 1.37 GiB |
+| `--expert-cache-slots 32` | 16.67 / 17.46 / 19.79 / 18.37 | **18.07** | 2366.9 ms | 4316.7 ms | 2.44 GiB |
+
+**+3.73 tok/s, +26.0 %.** 32 slots wins all four adjacent pairs and the
+distributions are disjoint (min B 16.67 > max A 15.61), so the effect clears the
+noise floor decisively. Both arms drift upward run-over-run (the machine keeps
+warming past the two warmups), but because the arms are interleaved that drift
+cancels in the pairwise comparison — it does not manufacture the gap.
+
+Two ways this differs from Gemma, both material:
+
+1. **The win is ~6× larger** (+26 % vs +4.3 %), because expert I/O await is a far
+   bigger share of Qwen's decode, exactly as the profile predicted.
+2. **There is no refund.** On Gemma about half the I/O saving reappeared as
+   `unaccounted` GPU stall. On Qwen *both* blocks drop — await −864.7 ms (−26.8 %)
+   **and** unaccounted −918.9 ms (−17.6 %) — so the throughput gain tracks the full
+   I/O saving rather than half of it. This is why measuring per-family was worth
+   doing: the Gemma result would have understated Qwen by a wide margin.
+
+### Still opt-in, and why
+
+Per AGENTS.md this is a measurement, not a default change. The cost side is real:
+32 slots raises peak RSS from 1.37 GiB to 2.44 GiB, **+1.07 GiB (+78 %)**, for this
+model at 4K context. On a memory-constrained device that is a genuine tradeoff, so
+16 slots stays the default and `--expert-cache-slots 32` stays opt-in. A defensible
+default-flip proposal would still need the other two Qwen prompts under the same
+interleaved treatment and a headroom check at the largest supported context, not
+just 4K.
+
 ## Reusable rig
 
 The Gate B harness from Stage 1 is the matched-control basis: same three frozen
@@ -157,7 +222,9 @@ required byte-identical Gemma output, Stage 2 requires byte-identical output
 
 ## Caveat on coverage
 
-The installed model is Gemma 4 (`scratch/gemma4.gturbo`); Qwen 3.6 is not
-downloaded. Expert-I/O, slot-cache, and rdadvise work is family-agnostic and
-measurable on Gemma today. Any Qwen-specific decode claim needs the ~19.6 GB
-install first.
+Both families are now installed (`scratch/gemma4.gturbo`, `scratch/qwen36.gturbo`).
+Expert-I/O, slot-cache, and rdadvise work is family-agnostic and has now been
+measured on **both** — see Stage 2C above for the Qwen profile and slot A/B. The
+remaining gaps are per-family breadth (only short-explanation was A/B'd on Qwen;
+medium and long still want the same interleaved treatment) and a clean rdadvise
+re-measure, not a missing model.
