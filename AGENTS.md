@@ -54,8 +54,9 @@ Report the commit, hardware and RAM, macOS, Swift version, exact command, exit c
 
 ## App controls
 
-The Mac app sends prompts through the pinned Gemma 4 IT chat format. It
-exposes context length, temperature, Top-K, Top-P, expert-cache slots, prefill,
+The Mac app sends prompts through the chat format of whichever supported model
+is selected. It exposes a model picker (Model menu and the install screen),
+context length, temperature, Top-K, Top-P, expert-cache slots, prefill,
 and RDADVISE. The defaults are temperature `0.2`, Top-K `64`, and Top-P `0.95`.
 Responses can use the context space left after formatting the prompt, and FP16
 is the runtime KV format. The HUD shows generation rate, token count, and
