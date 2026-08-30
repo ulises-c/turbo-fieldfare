@@ -53,7 +53,9 @@ Never carry over a reported percentage as an expected result.
    below. Expert I/O await is the flat ~40 % block; attention over KV is the
    context-dependent one.
 3. **Choose optimizations from that evidence**, one lever per commit, each with a
-   matched-control A/B. — in progress; first A/B (expert-cache slots) done.
+   matched-control A/B. — in progress. Expert-cache slots and rdadvise A/B'd on
+   both families (Gemma Stage 2B, Qwen Stage 2C): slots is a real opt-in win
+   (+4.3 % Gemma, +26 % Qwen), rdadvise is a settled negative. No default flipped.
 
 ## Stage 2A instrumentation contract
 
@@ -140,7 +142,8 @@ delta alone would suggest.
 Read-advice (`--rdadvise adaptive` / `bounded`) cut I/O await similarly but
 returned it all to `unaccounted`, netting no throughput change. It was measured
 only in the order-confounded first pass, so it is recorded as "no effect
-observed", not as a settled negative.
+observed", not as a settled negative. **(Update: re-measured cleanly on Qwen in
+Stage 2C below — now a settled negative, −10.4 % tok/s for `adaptive`.)**
 
 Per AGENTS.md this is a measurement, not a default change: 16 slots remains the
 default and `--expert-cache-slots 32` remains opt-in. A default-flip proposal
@@ -212,6 +215,28 @@ default-flip proposal would still need the other two Qwen prompts under the same
 interleaved treatment and a headroom check at the largest supported context, not
 just 4K.
 
+### Stage 2C A/B: read-advice (rdadvise), the un-confounding
+
+The Gemma pass left rdadvise as "no effect observed" because its only measurement
+was order-confounded. Re-run cleanly on Qwen with the slot-A/B treatment (two
+warmups discarded, `off` vs `adaptive` interleaved A/B, four pairs,
+short-explanation), it is now a **settled negative**, not an unknown. Script:
+`Scripts/stage2_qwen_rdadvise.sh`. All eight stdouts share the same hash.
+
+| arm | tok/s (4 runs) | mean | expert io await | unaccounted |
+|---|---|---|---|---|
+| `--rdadvise off` (default) | 14.59 / 14.82 / 14.15 / 14.72 | **14.57** | 3234.3 ms | 5071.9 ms |
+| `--rdadvise adaptive` | 13.31 / 13.07 / 12.81 / 13.05 | **13.06** | 2821.4 ms | 5991.6 ms |
+
+**−1.51 tok/s, −10.4 %** — adaptive is consistently *worse*, losing all four
+adjacent pairs with disjoint distributions. The mechanism is now measured rather
+than guessed: adaptive read-advice **does** cut expert I/O await (−412.9 ms,
+−12.8 %), but that saving is **more than fully refunded to `unaccounted`**
+(+919.7 ms, +18.1 %). The madvise hints trade I/O wait for GPU stall and then
+some, so throughput drops. `off` is correctly the default and there is no case
+here for changing it. (Only `adaptive` was tested; `bounded`/`default` were not,
+but the await-for-stall refund makes a net win from a gentler policy unlikely.)
+
 ## Reusable rig
 
 The Gate B harness from Stage 1 is the matched-control basis: same three frozen
@@ -226,5 +251,5 @@ Both families are now installed (`scratch/gemma4.gturbo`, `scratch/qwen36.gturbo
 Expert-I/O, slot-cache, and rdadvise work is family-agnostic and has now been
 measured on **both** — see Stage 2C above for the Qwen profile and slot A/B. The
 remaining gaps are per-family breadth (only short-explanation was A/B'd on Qwen;
-medium and long still want the same interleaved treatment) and a clean rdadvise
-re-measure, not a missing model.
+medium and long still want the same interleaved treatment), not a missing model
+or an unmeasured rdadvise.
