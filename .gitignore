@@ -48,3 +48,7 @@ tmp/
 __pycache__/
 *.pyc
 .venv/
+
+# Agent tooling (Hermes railguard session state)
+.railguard/
+.hermes/

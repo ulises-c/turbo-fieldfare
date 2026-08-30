@@ -391,9 +391,12 @@ swift run -c release TurboFieldfareCLI \
   --messages-file messages.json
 ```
 
-The Mac app selects Qwen with `TURBO_FIELDFARE_MODEL=qwen36` in the
-environment; the server auto-detects the installed model and serves it as
-`qwen3.6-35b-a3b` with the ChatML template and Qwen tool-call format.
+The Mac app has a model picker in the **Model** menu and on the install screen,
+so either model can be downloaded and selected without leaving the app; the
+choice persists across launches. `TURBO_FIELDFARE_MODEL=qwen36` in the
+environment still overrides it. The server auto-detects the installed model and
+serves it as `qwen3.6-35b-a3b` with the ChatML template and Qwen tool-call
+format.
 
 Measured on an M5 following the
 [community benchmark protocol](docs/COMMUNITY_BENCHMARKS.md) — the three frozen

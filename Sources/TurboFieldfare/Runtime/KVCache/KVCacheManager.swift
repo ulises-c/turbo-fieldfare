@@ -170,6 +170,16 @@ public final class KVCacheManager {
         return capacityTokens[layer] * strides[layer]
     }
 
+    /// Total resident K+V bytes across every layer. Linear layers contribute
+    /// nothing (their shared placeholder holds no per-token rows). This is the
+    /// ground truth `ArchConfig.kvFootprint` predicts, and the cross-check test
+    /// between them is what keeps the memory estimates honest.
+    public var allocatedKVBytes: Int {
+        (0..<config.numLayers).reduce(0) { total, layer in
+            kinds[layer] == .linear ? total : total + 2 * bufferLength(layer: layer)
+        }
+    }
+
     /// Write target for this layer's K projection at `position`.
     public func kSlot(layer: Int, position: Int) -> (buffer: MTLBuffer, offset: Int) {
         precondition(kinds[layer] != .linear, "linear layers have no KV slots")

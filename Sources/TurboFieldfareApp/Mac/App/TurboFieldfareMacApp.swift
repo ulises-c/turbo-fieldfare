@@ -1,4 +1,5 @@
 import AppKit
+import TurboFieldfare
 import TurboFieldfareAppCore
 import TurboFieldfareMacPresentation
 import SwiftUI
@@ -87,6 +88,16 @@ struct TurboFieldfareMacApp: App {
                     .disabled(!model.canCancelInstall)
             }
             CommandMenu("Model") {
+                Picker("Model", selection: modelFamilyBinding) {
+                    ForEach(AppModel.selectableModelFamilies, id: \.self) { family in
+                        Text(AppModelInstallDescriptor.descriptor(for: family)?
+                            .displayName ?? family.rawValue)
+                            .tag(family)
+                    }
+                }
+                .pickerStyle(.inline)
+                .disabled(!model.canSelectModelFamily)
+                Divider()
                 Button("Load Model", action: model.loadModel)
                     .disabled(!model.canLoadModel)
                 Button("Reload Model", action: model.reloadModel)
@@ -141,6 +152,14 @@ struct TurboFieldfareMacApp: App {
             NSWorkspace.shared.open(url)
         case .unavailable:
             break
+        }
+    }
+
+    private var modelFamilyBinding: Binding<ModelFamily> {
+        Binding {
+            model.selectedModelFamily
+        } set: { family in
+            model.selectModelFamily(family)
         }
     }
 

@@ -15,8 +15,13 @@ let runtimeConfiguration: RuntimeConfiguration
 do {
     arguments = try ServerArguments.parse(Array(CommandLine.arguments.dropFirst()))
     // Resolved here so an unusable flag combination exits with usage instead of
-    // failing after the model has started loading.
-    runtimeConfiguration = try arguments.resolvedRuntimeConfiguration()
+    // failing after the model has started loading. The KV budget that gates
+    // `--prefill off` is architecture-dependent, so read the family from the
+    // manifest first; a directory we cannot peek falls back to the Gemma 4
+    // default, which is the stricter bound.
+    let family = (try? ManifestReader.peekFamily(
+        directoryURL: URL(fileURLWithPath: arguments.model).standardizedFileURL)) ?? .gemma4
+    runtimeConfiguration = try arguments.resolvedRuntimeConfiguration(family: family)
 } catch ServerArgumentError.help {
     print(ServerArguments.usage)
     exit(0)

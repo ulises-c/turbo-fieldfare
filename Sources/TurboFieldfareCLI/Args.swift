@@ -121,7 +121,10 @@ extension Args {
 
     options:
       --max-new <int>            Generated-token limit (default 1024).
-      --max-context <int>        Context limit in tokens (default 8192).
+      --max-context <int>        Context limit in tokens (default 8192, max
+                                 262144). Both supported families are natively
+                                 262144. Above about 64K Gemma 4 needs
+                                 --prefill chunked; Qwen 3.6 does not.
       --temperature <float>      Sampling temperature (default 0.2; 0 = greedy).
       --top-k <int>              Top-k truncation, 1...256 (default 64; 0 = off).
       --top-p <float>            Nucleus truncation (default 0.95).
@@ -144,7 +147,8 @@ extension Args {
 
     public func resolvedRuntimeConfiguration(
         forceLogitsHead: Bool,
-        imagePrompt: Bool = false) throws -> RuntimeConfiguration {
+        imagePrompt: Bool = false,
+        family: ModelFamily? = nil) throws -> RuntimeConfiguration {
         // Images reach the runtime two ways, `--image` and `image_file` parts
         // inside `--messages-file`, and only the first fills `images`. Asking
         // the caller keeps the second from surviving validation and dying in
@@ -170,6 +174,23 @@ extension Args {
             throw ArgsError.invalidValue(
                 flag: "--expert-cache-slots",
                 value: "\(expertCacheSlots) requires --prefill off")
+        }
+        // The same admission rule the server and app apply. Before this the
+        // CLI accepted any positive --max-context and failed later inside the
+        // allocator, so the three surfaces disagreed about what was legal.
+        do {
+            try ContextAdmission.check(
+                maxContext: maxContext,
+                family: family,
+                prefillEnabled: prefillPolicy == .chunked,
+                prefillChunkTokens: prefillChunkTokens)
+        } catch let rejection as ContextAdmission.Rejection {
+            // `invalidValue` already prints "--max-context <value>", so the
+            // message names the context only by its role, not its number.
+            throw ArgsError.invalidValue(
+                flag: "--max-context",
+                value: rejection.message(subject: "\(maxContext)",
+                                         prefillRemedy: "--prefill on"))
         }
         return RuntimeConfiguration(
             expertCacheSlots: expertCacheSlots,

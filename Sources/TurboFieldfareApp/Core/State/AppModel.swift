@@ -92,7 +92,7 @@ public final class AppModel {
     public private(set) var runIdentity: Int = 0
 
     private let client: any AppInferenceClient
-    private let installer: any AppModelInstallerClient
+    private var installer: any AppModelInstallerClient
     private let visionInstaller: any AppVisionPackInstallerClient
     private var runTask: Task<Void, Never>?
     private var loadTask: Task<Void, Never>?
@@ -455,6 +455,52 @@ public final class AppModel {
 
     private var currentForceLogitsHead: Bool {
         temperature != 0
+    }
+
+    /// The family the app is currently pointed at, derived from the installer's
+    /// descriptor rather than stored separately, so it cannot drift from the
+    /// descriptor that actually drives downloads.
+    public var selectedModelFamily: ModelFamily { installer.descriptor.family }
+
+    /// Families the app can offer, in menu order.
+    public static var selectableModelFamilies: [ModelFamily] {
+        AppModelInstallDescriptor.selectableFamilies
+    }
+
+    /// Switching is a model-directory change, so it is refused for the same
+    /// reasons a directory change is: never mid-generation, and never while a
+    /// transfer is in flight, which would otherwise leave a partial download
+    /// owned by a descriptor no longer selected.
+    public var canSelectModelFamily: Bool {
+        !isRunning && !isInstallingModel && !isVisionCompanionOperationInProgress
+    }
+
+    /// Point the app at a different supported model.
+    ///
+    /// The selection is persisted so the next launch agrees, and the model
+    /// directory moves to that family's pack. `setModelURL` performs the
+    /// teardown — cancelling loads and transfers, clearing the transcript's
+    /// images, unloading the runtime — so this does not repeat it.
+    public func selectModelFamily(_ family: ModelFamily) {
+        guard canSelectModelFamily else { return }
+        guard family != selectedModelFamily else { return }
+        guard let descriptor = AppModelInstallDescriptor.descriptor(for: family) else {
+            return
+        }
+
+        AppModelInstallDescriptor.persistSelection(family)
+        installer = RepackModelInstallerClient(descriptor: descriptor)
+
+        let directory = AppModelLocation.defaultURL(descriptor: descriptor)
+        if directory.standardizedFileURL.path == modelPathText {
+            // Already at the right directory (a custom location, or the two
+            // packs share a parent): the installer changed underneath, so the
+            // readiness figures still have to be recomputed.
+            refreshInstallReadiness()
+            refreshVisionInstallReadiness()
+            return
+        }
+        setModelURL(directory)
     }
 
     public func setModelURL(_ url: URL) {
