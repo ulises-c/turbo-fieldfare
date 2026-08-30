@@ -5,7 +5,14 @@ enum GTurboLayoutValidator {
     static func validate(path: String,
                                 plan: RepackPlan,
                                 audit: RepackAudit? = nil) throws {
-        let data = try Posix.readBoundedData(path, maximumBytes: 16 * 1024 * 1024)
+        // Sized by the largest supported architecture, not by Gemma alone.
+        // Qwen 3.6 has 40 layers x 256 experts and its layout.json is about
+        // 22 MB, so a 16 MiB cap here rejected a fully downloaded, otherwise
+        // valid Qwen install at the final verification step.
+        // `VerifiedInstallTool.layoutMaxBytes` is the same bound; keep them
+        // together.
+        let data = try Posix.readBoundedData(
+            path, maximumBytes: VerifiedInstallTool.layoutMaxBytes)
         let layout: GTurboPackedExpertsLayoutV1
         do { layout = try GTurboPackedExpertsLayoutCodec.decode(data) }
         catch {
