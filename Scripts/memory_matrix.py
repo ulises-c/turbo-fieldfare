@@ -180,6 +180,20 @@ CAP_DRIVEN_ALLOCATION_CHECK = (262_144, 14, 7_268)
 # within 1 MB. This is the only Qwen memory measurement that exists.
 QWEN_4K_CORROBORATION = {"kv_excluding_state_mb": 84, "linear_state_mb": 64}
 
+# Qwen cap-driven allocation, measured 2026-08-29 on this M5 Max 36 GB host
+# against a real scratch/qwen36.gturbo install: a server at --max-context
+# 262144 --prefill on, sent a 17-token prompt, reached 6,641 MB phys_footprint.
+#
+# This is the first Qwen measurement above 4K and the first that exercises the
+# projected total rather than just the KV column. The projection must stay
+# conservative -- above the measurement, never below.
+#
+# INSTRUMENT: phys_footprint, not RSS. On Apple Silicon the Metal heaps backing
+# KV are mapped such that RSS reports only 1,075 MB for this same process --
+# a 6x understatement. Every memory number in this file is phys_footprint;
+# comparing an RSS reading against them produces a fake "huge overestimate".
+QWEN_CAP_DRIVEN_CHECK = (262_144, 17, 6_641)
+
 # Share of unified memory available to one process before the system leans on
 # swap. Deliberately conservative: the OS and UI need the rest.
 USABLE_FRACTION = 0.70
@@ -229,6 +243,22 @@ def validate():
         print("  MISMATCH: the KV model disagrees with the Qwen measurement.")
     else:
         print("  Agrees within rounding.")
+    print()
+
+    # Qwen: the projected TOTAL, checked against the first Qwen measurement
+    # above 4K. This is the one that exercises the borrowed overhead constant.
+    q_cap, q_prompt, q_measured = QWEN_CAP_DRIVEN_CHECK
+    q_projected = QWEN.resident_bytes(q_cap, 16) / MIB
+    print("Qwen cap-driven allocation (M5 Max 36 GB, 2026-08-29, real install)")
+    print(f"  a {q_prompt}-token prompt at --max-context {q_cap:,}")
+    print(f"  measured {q_measured:,} MB vs projected {q_projected:,.0f} MB "
+          f"({q_projected - q_measured:+,.0f} MB)")
+    if q_projected < q_measured:
+        print("  UNDERESTIMATE -- the projection must never sit below a "
+              "measurement")
+        ok = False
+    else:
+        print("  conservative, as required")
     print()
 
     if ok:

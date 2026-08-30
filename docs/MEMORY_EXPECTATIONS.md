@@ -43,6 +43,13 @@ the 253,952-token rung. `--max-context` is therefore the memory dial, and
 sizing it for the largest prompt you might ever send costs that memory on
 every request.
 
+**Every number here is `phys_footprint`, not RSS.** On Apple Silicon the Metal
+heaps backing the KV cache are mapped so that RSS does not count them. The same
+Qwen server at a 256K cap reports **1,075 MB RSS** and **6,641 MB
+phys_footprint** — a 6x difference. Reading `ps` output against this table will
+appear to show a huge overestimate that is not real. Use
+`/usr/bin/footprint -p <pid>`, or the HUD, which reports the same quantity.
+
 ## Gemma 4 26B-A4B
 
 Marginal KV cost is 20,480 bytes per token. Only the 5 full-attention layers
@@ -103,10 +110,23 @@ Architectural properties that follow:
   rather than a context constant — a single context bound would reject a
   configuration Qwen can serve comfortably.
 
-**Not measured for Qwen:** no long-context ladder has been run against it.
-The 2026-07-31 session measured 4K only, and the runtime-overhead constant in
-the total column is Gemma's, carried over. The KV column is exact; treat the
-totals above 4K as projections until a Qwen ladder run exists.
+**Measured for Qwen, 2026-08-29 (this repo, M5 Max 36 GB, real
+`scratch/qwen36.gturbo`):** a server at `--max-context 262144 --prefill on`,
+sent a 17-token prompt, reached **6,641 MB** phys_footprint. The 256K row above
+projects **8,347 MB**, so the projection is **conservative by 1,706 MB (20%)** —
+the direction required, but a looser fit than Gemma's rungs (0–46 MB). The gap
+is the borrowed overhead constant plus expert-cache slots that fill on demand
+rather than at load. `Scripts/memory_matrix.py --validate` now fails if this
+projection ever drops below the measurement.
+
+Two Qwen facts were confirmed on the real binary at the same time: it starts at
+a 256K cap **with `--prefill off`**, which Gemma is refused at identical
+arguments, and its footprint is cap-driven exactly as Gemma's is.
+
+**Still not measured for Qwen:** no retrieval or prefill-timing ladder has been
+run against it, and the runtime-overhead constant in the total column remains
+Gemma's. The KV column is exact and the 256K total now has one anchor; the
+intermediate rungs stay projections.
 
 ## Choosing a context cap
 
