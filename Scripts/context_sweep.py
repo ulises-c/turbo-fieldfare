@@ -54,10 +54,10 @@ RUNGS: dict[int, int] = {
 
 
 def run_rung(context: int, filler: int, depths: str, out: Path,
-             jsonl: Path) -> tuple[int, list[dict]]:
+             jsonl: Path, model: Path) -> tuple[int, list[dict]]:
     command = [
         sys.executable, str(ROOT / "Scripts" / "context_retrieval.py"),
-        "--model", str(ROOT / "scratch" / "gemma4.gturbo"),
+        "--model", str(model),
         "--max-context", str(context),
         "--filler-words", str(filler),
         "--depths", depths,
@@ -99,9 +99,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rungs", default="",
                         help="Comma-separated context caps. Default: all.")
     parser.add_argument("--depths", default="0.1,0.5,0.9")
+    parser.add_argument("--model", type=Path,
+                        default=ROOT / "scratch" / "gemma4.gturbo",
+                        help="Path to the .gturbo pack to sweep.")
     parser.add_argument("--out", type=Path,
                         default=ROOT / "benchmark-results" / "context-retrieval")
     options = parser.parse_args(argv)
+
+    if not options.model.exists():
+        parser.error(f"no model pack at {options.model}")
 
     if options.rungs:
         wanted = [int(part) for part in options.rungs.split(",") if part.strip()]
@@ -112,16 +118,19 @@ def main(argv: list[str] | None = None) -> int:
         wanted = sorted(RUNGS)
 
     options.out.mkdir(parents=True, exist_ok=True)
-    jsonl = options.out / "sweep.jsonl"
+    # Per-model file: a Gemma sweep and a Qwen sweep must never land in one
+    # JSONL, or an aggregate over it silently averages two architectures.
+    stem = options.model.name.replace(".gturbo", "")
+    jsonl = options.out / f"sweep-{stem}.jsonl"
     commit = subprocess.check_output(
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
-    print(f"commit {commit}\nrungs {wanted}\ndepths {options.depths}\n"
-          f"appending to {jsonl}", flush=True)
+    print(f"commit {commit}\nmodel {options.model}\nrungs {wanted}\n"
+          f"depths {options.depths}\nappending to {jsonl}", flush=True)
 
     everything: list[dict] = []
     for context in wanted:
         _, records = run_rung(context, RUNGS[context], options.depths,
-                              options.out, jsonl)
+                              options.out, jsonl, options.model)
         everything.extend(records)
 
     print("\n=== summary ===", flush=True)
