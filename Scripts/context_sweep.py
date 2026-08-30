@@ -147,8 +147,10 @@ def main(argv: list[str] | None = None) -> int:
                  if r.get("pp_tokens_per_second")]
         mean = sum(rates) / len(rates) if rates else float("nan")
         tokens = rows[0].get("prompt_tokens")
-        print(f"{context // 1024:>7}K {tokens:>9,} {found:>4}/{len(rows):<3} "
-              f"{mean:>10.2f}", flush=True)
+        token_text = f"{tokens:,}" if isinstance(tokens, int) else "-"
+        rate_text = f"{mean:.2f}" if rates else "-"
+        print(f"{context // 1024:>7}K {token_text:>9} {found:>4}/{len(rows):<3} "
+              f"{rate_text:>10}", flush=True)
     print(f"\n{misses} miss(es) across {len(everything)} probes", flush=True)
     return 0 if misses == 0 else 1
 

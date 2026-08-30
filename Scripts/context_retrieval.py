@@ -81,6 +81,21 @@ def wait_ready(proc: subprocess.Popen[str], logs: list[str], ready: threading.Ev
             ready.set()
 
 
+def model_id_from_logs(logs: list[str]) -> str | None:
+    """Read the served model id out of the server's ready line.
+
+    The line looks like:
+        TurboFieldfareServer ready at http://127.0.0.1:8080 model=<id> ...
+    """
+    for line in logs:
+        if "TurboFieldfareServer ready" not in line:
+            continue
+        for token in line.split():
+            if token.startswith("model="):
+                return token[len("model="):]
+    return None
+
+
 def start_server(options: argparse.Namespace) -> tuple[subprocess.Popen[str], list[str]]:
     command = [
         str(options.server),
@@ -160,7 +175,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--server", type=Path,
                         default=ROOT / ".build/release/TurboFieldfareServer")
-    parser.add_argument("--model-id", default="gemma-4-26b-a4b-it")
+    # Default None -> taken from the server's ready line, which prints the id
+    # the pack actually serves. A hardcoded Gemma id made every Qwen probe
+    # fail with HTTP 404 model_not_found in 8ms, which the summary then
+    # rendered as "RECALL 0/3" -- a total-recall-failure shape for what was
+    # really a wrong-name error.
+    parser.add_argument("--model-id", default=None)
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--max-context", type=int, required=True,
                         help="Server context cap for this run.")
@@ -199,10 +219,25 @@ def main(argv: list[str] | None = None) -> int:
     proc, logs = start_server(options)
     records: list[dict] = []
     try:
+        if options.model_id is None:
+            served = model_id_from_logs(logs)
+            if served is None:
+                raise RuntimeError(
+                    "could not read model= from the server's ready line; "
+                    "pass --model-id explicitly")
+            options.model_id = served
+            print(f"model id: {served} (from the server)", flush=True)
         for depth in options.depths:
             record = probe(options, depth, logs)
             records.append(record)
             print(json.dumps(record, sort_keys=True), flush=True)
+            # A 404 means the request never reached the model. Recording it as
+            # found=False would be indistinguishable from a genuine retrieval
+            # miss, so stop rather than emit a run of fake zero-recall rows.
+            if "404" in str(record.get("error") or ""):
+                raise RuntimeError(
+                    f"server rejected model id {options.model_id!r} "
+                    f"(HTTP 404). This is a naming error, not a recall result.")
     finally:
         if proc.poll() is None:
             proc.send_signal(signal.SIGINT)
